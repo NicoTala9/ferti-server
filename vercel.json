@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/analyze/oocyte.js": { "maxDuration": 30 },
+    "api/analyze/sperm.js": { "maxDuration": 30 }
+  }
+}
