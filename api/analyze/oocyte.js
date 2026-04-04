@@ -32,25 +32,58 @@ export default async function handler(req, res) {
       patientAge <= 40 ? "38-40" :
       patientAge <= 42 ? "41-42" : ">42";
 
-    const prompt = `Sos un sistema de IA especializado en evaluación morfológica de ovocitos humanos para medicina reproductiva. Analizás la imagen de un ovocito y devolvés un JSON con predicciones basadas en evidencia científica (ESHRE Istanbul Consensus 2024, SART 2023).
+    const prompt = `Sos un sistema de IA especializado en evaluación morfológica de ovocitos humanos para medicina reproductiva. Analizás la imagen de un ovocito MII desnudado y devolvés predicciones calibradas basadas en evidencia científica actual.
+
+REFERENCIAS CLÍNICAS:
+- ESHRE Istanbul Consensus 2024 (criterios morfológicos)
+- SART 2023 (tasas de referencia por edad)
+- Murria et al. 2023 (Fertil Steril): CNN en ovocitos 2D → AUC 0.62-0.74 blasto/fertilización
+- Mercuri et al. 2024 (Hum Reprod): modelo semi-supervisado → AUC 0.71 ploidía desde imagen
+- Fjeldstad et al. 2022 (Hum Reprod): IA no invasiva → AUC 0.70-0.80 euploide
+- Drew et al. 2024 (Hum Reprod): reconocimiento de imagen → AUC 0.74 blastulación
 
 CONTEXTO DEL ANÁLISIS:
 - Edad de la paciente: ${patientAge} años (grupo etario: ${ageGroup})
 - Tipo de procedimiento: ${procedureType === "crio" ? "Criopreservación (vitrificación)" : "Fresco (FIV/ICSI)"}
 
-CRITERIOS DE EVALUACIÓN MORFOLÓGICA:
-Evaluá estos parámetros de la imagen del ovocito:
-1. Citoplasma: granularidad, homogeneidad, inclusiones, vacuolas
-2. Espacio perivitelino (PVS): tamaño, presencia de gránulos
-3. Corpúsculo polar 1 (PB1): integridad, fragmentación, tamaño
-4. Zona pelúcida (ZP): grosor, uniformidad, birefringencia
+CRITERIOS DE EVALUACIÓN MORFOLÓGICA (Istanbul Consensus 2024):
+Evaluá con precisión estos parámetros visibles en la imagen:
 
-ESCALAS DE REFERENCIA (ESHRE 2024):
-- Calidad: Alto / Medio Alto / Medio Bajo / Bajo
-- Prob. blastocisto por calidad: Alto 75-85%, Medio Alto 55-70%, Medio Bajo 35-50%, Bajo 15-35%
-- Prob. euploide base por grupo etario: <35: 50-60%, 35-37: 40-50%, 38-40: 30-40%, 41-42: 25-35%, >42: 15-25%
-- Ajuste por morfología: Alto +5-10%, Medio Alto 0%, Medio Bajo -5-10%, Bajo -10-20%
-${procedureType === "crio" ? "- Sobrevida crio (vitrificación): Alto 90-95%, Medio Alto 85-92%, Medio Bajo 78-86%, Bajo 72-82%" : ""}
+1. CITOPLASMA — el predictor más importante de blastulación:
+   - Granularidad: homogéneo (óptimo) / granular fino / granular grueso / inclusiones
+   - Vacuolas: ausentes (óptimo) / pequeñas periféricas / grandes / múltiples
+   - Cuerpos refractarios: ausentes (óptimo) / presentes
+   - Agregados de retículo endoplásmico liso (SER): ausentes (óptimo) / presentes → impacto negativo mayor
+
+2. ESPACIO PERIVITELINO (PVS):
+   - Tamaño: mínimo (óptimo) / moderado / grande
+   - Gránulos: ausentes (óptimo) / presentes → correlaciona negativamente con euploide
+
+3. CORPÚSCULO POLAR 1 (PB1):
+   - Morfología: íntegro regular (óptimo) / fragmentado / reabsorbido / gigante
+   - Fragmentación PB1 se asocia con aneuploidía en literatura reciente
+
+4. ZONA PELÚCIDA (ZP):
+   - Grosor: uniforme normal (óptimo) / delgada / gruesa / irregular
+   - Birefringencia: alta (óptimo) / reducida → predictor de fertilización (Polscope)
+
+CALIBRACIÓN DE PROBABILIDADES:
+Los modelos de IA actuales tienen AUC 0.62-0.80. Sé conservador y calibrado — no sobreestimes.
+
+Prob. blastocisto base por calidad morfológica:
+- Alto: 72-82% | Medio Alto: 52-67% | Medio Bajo: 32-48% | Bajo: 12-30%
+
+Prob. euploide base por grupo etario (SART 2023):
+- <35: 48-58% | 35-37: 38-48% | 38-40: 28-38% | 41-42: 20-30% | >42: 12-22%
+
+Ajuste morfológico sobre prob. euploide:
+- Citoplasma homogéneo + PVS mínimo + PB1 íntegro + ZP uniforme: +5-8%
+- Alteraciones leves (1-2 parámetros): 0%
+- Alteraciones moderadas (2-3 parámetros): -5-10%
+- Alteraciones severas o SER presente: -10-18%
+${procedureType === "crio" ? `
+Prob. sobrevida vitrificación (ESHRE 2024):
+- Alto: 90-95% | Medio Alto: 84-91% | Medio Bajo: 76-84% | Bajo: 68-78%` : ""}
 
 INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin explicaciones fuera del JSON.
 
@@ -61,15 +94,16 @@ Estructura exacta requerida:
   "euploidyProbability": <número entero 5-75>,
   "survivalProbability": <número entero 50-98>,
   "morphology": {
-    "cytoplasm": "<descripción concisa en español>",
-    "perivitellineSpace": "<descripción concisa en español>",
-    "polarBody": "<descripción concisa en español>",
-    "zonaPellucida": "<descripción concisa en español>"
+    "cytoplasm": "<descripción morfológica concisa: granularidad, vacuolas, inclusiones>",
+    "perivitellineSpace": "<tamaño y presencia de gránulos>",
+    "polarBody": "<integridad y morfología del PB1>",
+    "zonaPellucida": "<grosor y uniformidad>",
+    "anomalies": "<anomalías relevantes detectadas, o 'Sin anomalías destacables'>"
   },
-  "notes": "<observación clínica relevante en español, 1-2 oraciones>"
+  "notes": "<observación clínica en español: hallazgo morfológico principal y su implicación pronóstica, 1-2 oraciones>"
 }
 
-Analizá la imagen y devolvé el JSON:`;
+Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
 
     const response = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
@@ -109,6 +143,7 @@ Analizá la imagen y devolvé el JSON:`;
         perivitellineSpace: parsed.morphology?.perivitellineSpace || "Normal",
         polarBody: parsed.morphology?.polarBody || "Íntegro",
         zonaPellucida: parsed.morphology?.zonaPellucida || "Normal",
+        anomalies: parsed.morphology?.anomalies || "Sin anomalías destacables",
       },
       notes: parsed.notes || "",
     };
