@@ -20,7 +20,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { base64, mimeType = "image/jpeg", patientAge = 35, procedureType = "fresco" } = req.body;
+    const { base64, mimeType = "image/jpeg", patientAge = 35, procedureType = "fresco", clinicStats = null } = req.body;
 
     if (!base64) {
       return res.status(400).json({ error: "Missing base64 image" });
@@ -32,6 +32,21 @@ export default async function handler(req, res) {
       patientAge <= 40 ? "38-40" :
       patientAge <= 42 ? "41-42" : ">42";
 
+    // Construir bloque de contexto clínico real si hay datos de la clínica
+    let clinicContext = "";
+    if (clinicStats && clinicStats[ageGroup] && clinicStats[ageGroup].total >= 5) {
+      const cs = clinicStats[ageGroup];
+      const globalCs = clinicStats["global"];
+      clinicContext = `
+DATOS REALES DE LA CLÍNICA (priorizar sobre referencias bibliográficas):
+Grupo etario ${ageGroup} años — n=${cs.total} ovocitos registrados en esta clínica:
+- Tasa de blastulación observada: ${cs.blastoRate}% (usar como referencia base para blasto)
+- Tasa de euploidía confirmada por PGT-A: ${cs.pgtRate !== null ? cs.pgtRate + "% (n=" + cs.pgtN + ")" : "sin datos PGT suficientes"}
+- KIDScore promedio del grupo: ${cs.avgKidScore !== null ? cs.avgKidScore : "no disponible"}
+${globalCs ? `Dataset global clínica: ${globalCs.total} ovocitos, blasto global ${globalCs.blastoRate}%` : ""}
+INSTRUCCIÓN: Ajustá las probabilidades usando estos datos reales como ancla, no los rangos poblacionales de SART/ESHRE. Los rangos bibliográficos son solo referencia secundaria.`;
+    }
+
     const prompt = `Sos un sistema de IA especializado en evaluación morfológica de ovocitos humanos para medicina reproductiva. Analizás la imagen de un ovocito MII desnudado y devolvés predicciones calibradas basadas en evidencia científica actual.
 
 REFERENCIAS CLÍNICAS:
@@ -41,7 +56,7 @@ REFERENCIAS CLÍNICAS:
 - Mercuri et al. 2024 (Hum Reprod): modelo semi-supervisado → AUC 0.71 ploidía desde imagen
 - Fjeldstad et al. 2022 (Hum Reprod): IA no invasiva → AUC 0.70-0.80 euploide
 - Drew et al. 2024 (Hum Reprod): reconocimiento de imagen → AUC 0.74 blastulación
-
+${clinicContext}
 CONTEXTO DEL ANÁLISIS:
 - Edad de la paciente: ${patientAge} años (grupo etario: ${ageGroup})
 - Tipo de procedimiento: ${procedureType === "crio" ? "Criopreservación (vitrificación)" : "Fresco (FIV/ICSI)"}
