@@ -96,11 +96,27 @@ Prob. sobrevida vitrificación (ESHRE 2024):
 
 INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin explicaciones fuera del JSON.
 
+CÁLCULO OBLIGATORIO ANTES DE RESPONDER:
+1. Identificá la calidad morfológica (Alto/Medio Alto/Medio Bajo/Bajo)
+2. Tomá el valor BASE del rango (ej: Medio Alto → blasto base = 59%)
+3. Para cada parámetro con alteración, restá exactamente:
+   - Granularidad fina: -3% blasto
+   - Granularidad gruesa o inclusiones: -8% blasto
+   - Vacuolas pequeñas: -4% blasto
+   - Vacuolas grandes: -10% blasto
+   - PVS moderado: -2% euploide
+   - PVS grande: -5% euploide
+   - PB1 fragmentado leve: -4% euploide
+   - PB1 fragmentado severo: -8% euploide
+   - ZP irregular o gruesa: -3% blasto
+   - SER presente: -12% blasto, -8% euploide
+4. El resultado final = base - suma de penalizaciones. Este DEBE ser el número en el JSON.
+
 Estructura exacta requerida:
 {
   "quality": "Alto|Medio Alto|Medio Bajo|Bajo",
-  "blastocystProbability": <número entero 5-95>,
-  "euploidyProbability": <número entero 5-75>,
+  "blastocystProbability": <número entero calculado según las penalizaciones de arriba>,
+  "euploidyProbability": <número entero calculado según las penalizaciones de arriba>,
   "survivalProbability": <número entero 50-98>,
   "morphology": {
     "cytoplasm": "<descripción morfológica concisa: granularidad, vacuolas, inclusiones>",
