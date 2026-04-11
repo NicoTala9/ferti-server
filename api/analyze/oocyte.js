@@ -81,6 +81,15 @@ Ajuste morfológico sobre prob. euploide:
 - Alteraciones leves (1-2 parámetros): 0%
 - Alteraciones moderadas (2-3 parámetros): -5-10%
 - Alteraciones severas o SER presente: -10-18%
+
+VARIACIÓN ENTRE OVOCITOS — MUY IMPORTANTE:
+Cada ovocito es único. Los valores numéricos DEBEN reflejar exactamente lo que ves en la imagen:
+- Si el citoplasma tiene granularidad fina → bajar blasto 3-6% respecto al óptimo
+- Si el PVS es moderado → bajar euploide 2-4%
+- Si el PB1 está fragmentado → bajar euploide 4-8%
+- Si la ZP es irregular o engrosada → bajar blasto 2-5%
+- Si todo es óptimo → usar el valor alto del rango
+Nunca uses el mismo número para dos ovocitos distintos a menos que sean morfológicamente idénticos en todos los parámetros.
 ${procedureType === "crio" ? `
 Prob. sobrevida vitrificación (ESHRE 2024):
 - Alto: 90-95% | Medio Alto: 84-91% | Medio Bajo: 76-84% | Bajo: 68-78%` : ""}
