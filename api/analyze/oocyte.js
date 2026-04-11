@@ -37,14 +37,19 @@ export default async function handler(req, res) {
     if (clinicStats && clinicStats[ageGroup] && clinicStats[ageGroup].total >= 5) {
       const cs = clinicStats[ageGroup];
       const globalCs = clinicStats["global"];
+      const morphCs = clinicStats["morphology"];
+
       clinicContext = `
 DATOS REALES DE LA CLÍNICA (priorizar sobre referencias bibliográficas):
 Grupo etario ${ageGroup} años — n=${cs.total} ovocitos registrados en esta clínica:
 - Tasa de blastulación observada: ${cs.blastoRate}% (usar como referencia base para blasto)
 - Tasa de euploidía confirmada por PGT-A: ${cs.pgtRate !== null ? cs.pgtRate + "% (n=" + cs.pgtN + ")" : "sin datos PGT suficientes"}
-- KIDScore promedio del grupo: ${cs.avgKidScore !== null ? cs.avgKidScore : "no disponible"}
-${globalCs ? `Dataset global clínica: ${globalCs.total} ovocitos, blasto global ${globalCs.blastoRate}%` : ""}
-INSTRUCCIÓN: Ajustá las probabilidades usando estos datos reales como ancla, no los rangos poblacionales de SART/ESHRE. Los rangos bibliográficos son solo referencia secundaria.`;
+${globalCs ? `- Dataset global clínica: ${globalCs.total} ovocitos, blasto global ${globalCs.blastoRate}%` : ""}
+${morphCs ? `
+CORRELACIÓN MORFOLOGÍA → RESULTADO REAL EN ESTA CLÍNICA:
+${Object.entries(morphCs).map(([q,v]) => `- Calidad ${q} (n=${v.total}): blasto ${v.blastoRate}%${v.pgtRate !== null ? `, euploide PGT ${v.pgtRate}%` : ""}${v.gardnerGoodRate !== null ? `, Gardner ≥4BB ${v.gardnerGoodRate}%` : ""}`).join("\n")}
+INSTRUCCIÓN: Cuando evaluás la imagen y determinás la calidad morfológica, usá las tasas de blastulación reales de esta clínica para esa categoría, no los rangos bibliográficos.` : ""}
+INSTRUCCIÓN GENERAL: Ajustá las probabilidades usando estos datos reales como ancla principal.`;
     }
 
     const prompt = `Sos un sistema de IA especializado en evaluación morfológica de ovocitos humanos para medicina reproductiva. Analizás la imagen de un ovocito MII desnudado y devolvés predicciones calibradas basadas en evidencia científica actual.
