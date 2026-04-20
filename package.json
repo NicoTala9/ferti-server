@@ -1,7 +1,13 @@
 {
-  "name": "ferti-server",
+  "name": "@ferti/server",
+  "private": true,
   "version": "1.0.0",
   "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'No build step needed for serverless functions'",
+    "clean": "rm -rf .vercel .turbo"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.20.0"
   }

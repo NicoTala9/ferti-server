@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { assertAllowedOrigin } from "../_lib/auth.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -72,6 +73,7 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (!assertAllowedOrigin(req, res)) return;
 
   try {
     const { base64, mimeType = "image/jpeg", context = "hormonal" } = req.body || {};

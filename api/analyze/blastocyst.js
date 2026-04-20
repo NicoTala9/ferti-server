@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { assertAllowedOrigin } from "../_lib/auth.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -12,6 +13,7 @@ export default async function handler(req, res) {
   setCORS(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (!assertAllowedOrigin(req, res)) return;
 
   try {
     const { imageBase64, dayOfDevelopment, patientAge, cultureType, linkedOocyte, linkedSperm, linkedClinical } = req.body;
@@ -23,19 +25,19 @@ export default async function handler(req, res) {
     // Build context from linked analyses
     let contextSection = "";
     if (linkedOocyte) {
-      contextSection += `\nOVOCITO DE ORIGEN (OocyteAI):
+      contextSection += `\nOVOCITO DE ORIGEN (OvoQ):
 - Calidad: ${linkedOocyte.quality || "—"}
 - Prob. blastocisto predicha: ${linkedOocyte.blastocystProbability || "—"}%
 - Prob. euploide predicha: ${linkedOocyte.euploidyProbability || "—"}%`;
     }
     if (linkedSperm) {
-      contextSection += `\nANÁLISIS SEMINAL (SpermAI):
+      contextSection += `\nANÁLISIS SEMINAL (SpermQ):
 - SpermScore: ${linkedSperm.spermScore || "—"}
 - Diagnóstico: ${linkedSperm.diagnosis || "—"}
 - Morfología: ${linkedSperm.params?.morphology || "—"}%`;
     }
     if (linkedClinical) {
-      contextSection += `\nHISTORIA CLÍNICA (ClinicalAI):
+      contextSection += `\nHISTORIA CLÍNICA (ClinicalQ):
 - AMH: ${linkedClinical.amh || "—"}
 - AFC: ${linkedClinical.afc || "—"}
 - Protocolo: ${linkedClinical.protocol || "—"}`;
