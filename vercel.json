@@ -3,7 +3,10 @@
     "api/analyze/oocyte.js": { "maxDuration": 30 },
     "api/analyze/sperm.js": { "maxDuration": 30 },
     "api/analyze/pgt.js": { "maxDuration": 30 },
-    "api/analyze/blastocyst.js": { "maxDuration": 30 }
+    "api/analyze/blastocyst.js": { "maxDuration": 30 },
+    "api/analyze/clinical-protocol.js": { "maxDuration": 30 },
+    "api/analyze/clinical-control.js": { "maxDuration": 30 },
+    "api/analyze/clinical-ocr.js": { "maxDuration": 30 }
   },
   "headers": [
     {

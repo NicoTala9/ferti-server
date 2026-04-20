@@ -1,0 +1,172 @@
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+function setCORS(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Content-Type", "application/json");
+}
+
+const CONTEXT_PROMPTS = {
+  hormonal: `Extrae valores de un perfil hormonal / reserva ovárica. Campos esperados:
+- amh: hormona antimülleriana (ng/mL)
+- afc: conteo folicular antral (número total ambos ovarios)
+- fsh: FSH basal (mUI/mL)
+- estradiol: estradiol basal (pg/mL)
+- progBasal: progesterona basal (ng/mL)
+
+Devolvé JSON exacto:
+{
+  "amh": <número|null>,
+  "afc": <número|null>,
+  "fsh": <número|null>,
+  "estradiol": <número|null>,
+  "progBasal": <número|null>,
+  "notes": "<observaciones breves o cadena vacía>"
+}`,
+
+  control: `Extrae datos de un control ecográfico + laboratorio durante estimulación ovárica. Campos esperados:
+- follicles.right / follicles.left: arrays de folículos por ovario con tamaño en mm. Ejemplo: [{"size": 12}, {"size": 14}]
+- endometrium.thickness: mm
+- endometrium.pattern: "Trilaminar" | "Homogéneo" | "Irregular"
+- hormones.estradiol: pg/mL
+- hormones.progesterone: ng/mL
+- hormones.lh: mUI/mL
+
+Devolvé JSON exacto:
+{
+  "follicles": { "right": [{"size": <número>}, ...], "left": [{"size": <número>}, ...] },
+  "endometrium": { "thickness": <número|null>, "pattern": "Trilaminar|Homogéneo|Irregular|null" },
+  "hormones": { "estradiol": <número|null>, "progesterone": <número|null>, "lh": <número|null> },
+  "notes": "<observaciones>"
+}`,
+
+  trigger: `Extrae datos del trigger y de la punción folicular. Campos esperados:
+- type: "hCG" | "Agonista" | "Dual"
+- medication: ej "Ovidrel 250mcg" o "Decapeptyl 0.2mg"
+- date: YYYY-MM-DD
+- time: HH:MM (24h)
+- total: número total de ovocitos recuperados
+- mii: ovocitos maduros (MII)
+- mi: ovocitos MI
+- gv: ovocitos en vesícula germinal (GV)
+
+Devolvé JSON exacto:
+{
+  "type": "hCG|Agonista|Dual|null",
+  "medication": "<string o null>",
+  "date": "<YYYY-MM-DD o ''>",
+  "time": "<HH:MM o ''>",
+  "total": <número|null>,
+  "mii": <número|null>,
+  "mi": <número|null>,
+  "gv": <número|null>,
+  "notes": "<observaciones>"
+}`,
+};
+
+export default async function handler(req, res) {
+  setCORS(res);
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  try {
+    const { base64, mimeType = "image/jpeg", context = "hormonal" } = req.body || {};
+
+    if (!base64) return res.status(400).json({ error: "Missing base64 file" });
+    if (!CONTEXT_PROMPTS[context]) return res.status(400).json({ error: "Invalid context. Use 'hormonal' | 'control' | 'trigger'" });
+
+    const isDocument = mimeType === "application/pdf";
+
+    const prompt = `Sos un sistema de extracción de datos médicos. Recibís una imagen o PDF de un estudio o informe y extraés valores numéricos con precisión.
+
+${CONTEXT_PROMPTS[context]}
+
+INSTRUCCIONES:
+- Si un valor NO aparece claramente → usar null (no inventar).
+- Para campos numéricos: extraé solo el número, sin unidades.
+- Respondé ÚNICAMENTE con el JSON válido, sin markdown, sin texto extra.
+
+Analizá el documento y devolvé el JSON:`;
+
+    const contentBlock = isDocument
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+      : { type: "image", source: { type: "base64", media_type: mimeType, data: base64 } };
+
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 800,
+      messages: [
+        { role: "user", content: [contentBlock, { type: "text", text: prompt }] },
+      ],
+    });
+
+    const raw = response.content[0].text.trim();
+    const jsonStr = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
+    const parsed = JSON.parse(jsonStr);
+
+    // Validación ligera por contexto
+    const clean = sanitize(parsed, context);
+    return res.status(200).json({ ...clean, source: "claude", context });
+  } catch (err) {
+    console.error("clinical-ocr error:", err);
+    return res.status(500).json({ error: "OCR failed", detail: err.message });
+  }
+}
+
+function num(v) {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function sanitize(p, ctx) {
+  if (ctx === "hormonal") {
+    return {
+      amh: num(p.amh),
+      afc: num(p.afc),
+      fsh: num(p.fsh),
+      estradiol: num(p.estradiol),
+      progBasal: num(p.progBasal),
+      notes: String(p.notes || "").slice(0, 300),
+    };
+  }
+  if (ctx === "control") {
+    const fArr = (arr) => Array.isArray(arr) ? arr.map(f => ({ size: num(f?.size) })).filter(f => f.size != null) : [];
+    const pat = ["Trilaminar", "Homogéneo", "Irregular"].includes(p?.endometrium?.pattern) ? p.endometrium.pattern : "";
+    return {
+      follicles: {
+        right: fArr(p?.follicles?.right),
+        left: fArr(p?.follicles?.left),
+      },
+      endometrium: {
+        thickness: num(p?.endometrium?.thickness),
+        pattern: pat,
+      },
+      hormones: {
+        estradiol: num(p?.hormones?.estradiol),
+        progesterone: num(p?.hormones?.progesterone),
+        lh: num(p?.hormones?.lh),
+      },
+      notes: String(p.notes || "").slice(0, 300),
+    };
+  }
+  if (ctx === "trigger") {
+    const type = ["hCG", "Agonista", "Dual"].includes(p.type) ? p.type : "";
+    return {
+      type,
+      medication: p.medication ? String(p.medication).slice(0, 60) : "",
+      date: typeof p.date === "string" ? p.date.slice(0, 10) : "",
+      time: typeof p.time === "string" ? p.time.slice(0, 5) : "",
+      total: num(p.total),
+      mii: num(p.mii),
+      mi: num(p.mi),
+      gv: num(p.gv),
+      notes: String(p.notes || "").slice(0, 300),
+    };
+  }
+  return p;
+}
