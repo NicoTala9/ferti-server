@@ -1,5 +1,4 @@
 {
-  "//": "BACKEND-001: CORS headers se setean dinámicamente en cada handler via _lib/cors.js. El wildcard `*` anterior anulaba el origin allowlist porque el browser ya pasaba el preflight antes de llegar a assertAllowedOrigin().",
   "functions": {
     "api/analyze/oocyte.js": { "maxDuration": 30 },
     "api/analyze/sperm.js": { "maxDuration": 30 },
