@@ -1,21 +1,16 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { assertAllowedOrigin } from "../_lib/auth.js";
+import { setCORS, handleOptions } from "../_lib/cors.js";
+import { assertWithinRateLimit } from "../_lib/rateLimit.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-function setCORS(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Content-Type", "application/json");
-}
-
 export default async function handler(req, res) {
-  setCORS(res);
-
-  if (req.method === "OPTIONS") return res.status(200).end();
+  setCORS(req, res);
+  if (handleOptions(req, res)) return;
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!assertAllowedOrigin(req, res)) return;
+  if (!(await assertWithinRateLimit(req, res))) return;
 
   try {
     const {
@@ -154,6 +149,8 @@ Devolvé el JSON:`;
     return res.status(200).json(result);
   } catch (err) {
     console.error("clinical-protocol error:", err);
-    return res.status(500).json({ error: "Analysis failed", detail: err.message });
+    // BACKEND-006: no exponer err.message al cliente (information leak).
+    // Los detalles quedan en console.error para Vercel logs.
+    return res.status(500).json({ error: "Analysis failed" });
   }
 }

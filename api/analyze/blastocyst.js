@@ -1,23 +1,24 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { assertAllowedOrigin } from "../_lib/auth.js";
+import { setCORS, handleOptions } from "../_lib/cors.js";
+import { validateBase64 } from "../_lib/validation.js";
+import { assertWithinRateLimit } from "../_lib/rateLimit.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-function setCORS(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
 export default async function handler(req, res) {
-  setCORS(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
+  // BACKEND-011: solo POST/OPTIONS (antes declaraba GET pero lo rechazaba).
+  setCORS(req, res);
+  if (handleOptions(req, res)) return;
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!assertAllowedOrigin(req, res)) return;
+  if (!(await assertWithinRateLimit(req, res))) return;
 
   try {
-    const { imageBase64, dayOfDevelopment, patientAge, cultureType, linkedOocyte, linkedSperm, linkedClinical } = req.body;
-    if (!imageBase64) return res.status(400).json({ error: "imageBase64 required" });
+    const { imageBase64, dayOfDevelopment, patientAge, cultureType, linkedOocyte, linkedSperm, linkedClinical } = req.body || {};
+
+    // BACKEND-002: validar payload size ANTES del split (el data URL prefix cuenta poco pero mejor cortarlo).
+    if (!validateBase64(imageBase64, res, { fieldName: "imageBase64" })) return;
 
     const base64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
     const mimeType = imageBase64.startsWith("data:image/png") ? "image/png" : "image/jpeg";
@@ -168,6 +169,8 @@ Analizá la imagen y devolvé el JSON:`;
     return res.status(200).json(result);
   } catch (err) {
     console.error("blastocyst analyze error:", err);
-    return res.status(500).json({ error: "Analysis failed", detail: err.message });
+    // BACKEND-006: no exponer err.message al cliente (information leak).
+    // Los detalles quedan en console.error para Vercel logs.
+    return res.status(500).json({ error: "Analysis failed" });
   }
 }

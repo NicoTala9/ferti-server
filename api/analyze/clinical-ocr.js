@@ -1,14 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { assertAllowedOrigin } from "../_lib/auth.js";
+import { setCORS, handleOptions } from "../_lib/cors.js";
+import { validateBase64, validateMimeType, ALLOWED_DOC_MIMES } from "../_lib/validation.js";
+import { assertWithinRateLimit } from "../_lib/rateLimit.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-function setCORS(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Content-Type", "application/json");
-}
 
 const CONTEXT_PROMPTS = {
   hormonal: `Extrae valores de un perfil hormonal / reserva ovárica. Campos esperados:
@@ -69,17 +65,21 @@ Devolvé JSON exacto:
 };
 
 export default async function handler(req, res) {
-  setCORS(res);
-
-  if (req.method === "OPTIONS") return res.status(200).end();
+  setCORS(req, res);
+  if (handleOptions(req, res)) return;
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!assertAllowedOrigin(req, res)) return;
+  if (!(await assertWithinRateLimit(req, res))) return;
 
   try {
     const { base64, mimeType = "image/jpeg", context = "hormonal" } = req.body || {};
 
-    if (!base64) return res.status(400).json({ error: "Missing base64 file" });
-    if (!CONTEXT_PROMPTS[context]) return res.status(400).json({ error: "Invalid context. Use 'hormonal' | 'control' | 'trigger'" });
+    // BACKEND-002 / BACKEND-005: validar payload + mime whitelist (imagen o PDF)
+    if (!validateBase64(base64, res)) return;
+    if (!validateMimeType(mimeType, ALLOWED_DOC_MIMES, res)) return;
+
+    // BACKEND-022: mensaje genérico (antes filtraba los contextos válidos al atacante)
+    if (!CONTEXT_PROMPTS[context]) return res.status(400).json({ error: "Invalid context" });
 
     const isDocument = mimeType === "application/pdf";
 
@@ -115,7 +115,9 @@ Analizá el documento y devolvé el JSON:`;
     return res.status(200).json({ ...clean, source: "claude", context });
   } catch (err) {
     console.error("clinical-ocr error:", err);
-    return res.status(500).json({ error: "OCR failed", detail: err.message });
+    // BACKEND-006: no exponer err.message al cliente (information leak).
+    // Los detalles quedan en console.error para Vercel logs.
+    return res.status(500).json({ error: "OCR failed" });
   }
 }
 

@@ -1,31 +1,27 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { assertAllowedOrigin } from "../_lib/auth.js";
+import { setCORS, handleOptions } from "../_lib/cors.js";
+import { validateBase64, validateMimeType, ALLOWED_DOC_MIMES } from "../_lib/validation.js";
+import { assertWithinRateLimit } from "../_lib/rateLimit.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-function setCORS(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
 export default async function handler(req, res) {
-  setCORS(res);
+  setCORS(req, res);
+  if (handleOptions(req, res)) return;
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
   if (!assertAllowedOrigin(req, res)) return;
+  if (!(await assertWithinRateLimit(req, res))) return;
 
   try {
     const { base64, mimeType = "image/jpeg" } = req.body;
 
-    if (!base64) {
-      return res.status(400).json({ error: "Missing base64 file" });
-    }
+    // BACKEND-002 / BACKEND-021: validar payload size + mime whitelist (imagen o PDF)
+    if (!validateBase64(base64, res)) return;
+    if (!validateMimeType(mimeType, ALLOWED_DOC_MIMES, res)) return;
 
     const isDocument = mimeType === "application/pdf";
 
@@ -106,6 +102,8 @@ Analizá el documento y devolvé el JSON:`;
     return res.status(200).json(result);
   } catch (err) {
     console.error("sperm analyze error:", err);
-    return res.status(500).json({ error: "Analysis failed", detail: err.message });
+    // BACKEND-006: no exponer err.message al cliente (information leak).
+    // Los detalles quedan en console.error para Vercel logs.
+    return res.status(500).json({ error: "Analysis failed" });
   }
 }
