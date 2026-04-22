@@ -8,6 +8,7 @@
 // la infra de Vercel, no desde un browser).
 
 import { runPurge } from "../_lib/purgeDeleted.js";
+import { logSafeError } from "../_lib/logSafe.js";
 
 function isAuthorized(req) {
   const auth = req.headers?.authorization || "";
@@ -43,7 +44,9 @@ export default async function handler(req, res) {
     console.log("[purge-deleted] done", JSON.stringify(summary));
     return res.status(200).json({ ok: true, ...summary });
   } catch (e) {
-    console.error("[purge-deleted] failed:", e);
-    return res.status(500).json({ error: "Purge failed", detail: String(e?.message || e) });
+    // BACKEND-012: logSafeError — scrub body/err.cause antes de mandar a Vercel logs.
+    logSafeError("admin/purge-deleted", e);
+    // BACKEND-006: no exponer detail al cliente (el detail queda en logs).
+    return res.status(500).json({ error: "Purge failed" });
   }
 }

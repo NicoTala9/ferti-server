@@ -23,6 +23,7 @@ import { setCORS, handleOptions } from "../_lib/cors.js";
 import { getAdminDb } from "../_lib/firebaseAdmin.js";
 import { hashPassword, verifyPassword } from "../_lib/password.js";
 import { signSession } from "../_lib/jwt.js";
+import { logSafeError } from "../_lib/logSafe.js";
 
 const MAX_BODY_BYTES = 10 * 1024; // 10 KB. Un login no necesita más.
 
@@ -215,7 +216,8 @@ export default async function handler(req, res) {
     // Lo que devolvemos al cliente: user sin password + token.
     return res.status(200).json({ user, token });
   } catch (e) {
-    console.error("[auth/login] failed:", e?.message || e);
+    // BACKEND-012: logSafeError — scrub body/err.cause antes de mandar a Vercel logs.
+    logSafeError("auth/login", e);
     return res.status(500).json({ error: "Login failed" });
   }
 }

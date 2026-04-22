@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { assertAllowedOrigin } from "../_lib/auth.js";
 import { setCORS, handleOptions } from "../_lib/cors.js";
 import { assertWithinRateLimit } from "../_lib/rateLimit.js";
+import { logSafeError } from "../_lib/logSafe.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -102,7 +103,8 @@ Devolvé el JSON:`;
 
     return res.status(200).json(result);
   } catch (err) {
-    console.error("clinical-control error:", err);
+    // BACKEND-012: logSafeError — no filtrar req.body / err.cause en Vercel logs.
+    logSafeError("analyze/clinical-control", err);
     // BACKEND-006: no exponer err.message al cliente (information leak).
     // Los detalles quedan en console.error para Vercel logs.
     return res.status(500).json({ error: "Analysis failed" });
