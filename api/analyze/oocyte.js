@@ -17,7 +17,13 @@ export default async function handler(req, res) {
   if (!(await assertWithinRateLimit(req, res))) return;
 
   try {
-    const { base64, mimeType = "image/jpeg", patientAge = 35, procedureType = "fresco", clinicStats = null } = req.body;
+    // BACKEND-016: aceptamos `clinicStats` en el body para backward-compat con
+    // clientes que aún lo mandan, pero NO lo reinyectamos en el prompt a Anthropic.
+    // Mandar tasas reales de la clínica a un proveedor externo (aunque no identifique
+    // pacientes individuales) filtra métricas operativas sensibles. El calibrado por
+    // clínica, si hace falta recuperarlo, se hace server-side post-respuesta, no
+    // enviando los números al modelo. Ver docs/AUDIT/00-SUMMARY.md → BACKEND-016.
+    const { base64, mimeType = "image/jpeg", patientAge = 35, procedureType = "fresco" } = req.body;
 
     // BACKEND-002 / BACKEND-005: validar payload size + mime whitelist
     if (!validateBase64(base64, res)) return;
@@ -29,25 +35,8 @@ export default async function handler(req, res) {
       patientAge <= 40 ? "38-40" :
       patientAge <= 42 ? "41-42" : ">42";
 
-    // Construir bloque de contexto clínico real si hay datos de la clínica
-    let clinicContext = "";
-    if (clinicStats && clinicStats[ageGroup] && clinicStats[ageGroup].total >= 5) {
-      const cs = clinicStats[ageGroup];
-      const globalCs = clinicStats["global"];
-      const morphCs = clinicStats["morphology"];
-
-      clinicContext = `
-DATOS REALES DE LA CLÍNICA (priorizar sobre referencias bibliográficas):
-Grupo etario ${ageGroup} años — n=${cs.total} ovocitos registrados en esta clínica:
-- Tasa de blastulación observada: ${cs.blastoRate}% (usar como referencia base para blasto)
-- Tasa de euploidía confirmada por PGT-A: ${cs.pgtRate !== null ? cs.pgtRate + "% (n=" + cs.pgtN + ")" : "sin datos PGT suficientes"}
-${globalCs ? `- Dataset global clínica: ${globalCs.total} ovocitos, blasto global ${globalCs.blastoRate}%` : ""}
-${morphCs ? `
-CORRELACIÓN MORFOLOGÍA → RESULTADO REAL EN ESTA CLÍNICA:
-${Object.entries(morphCs).map(([q,v]) => `- Calidad ${q} (n=${v.total}): blasto ${v.blastoRate}%${v.pgtRate !== null ? `, euploide PGT ${v.pgtRate}%` : ""}${v.gardnerGoodRate !== null ? `, Gardner ≥4BB ${v.gardnerGoodRate}%` : ""}`).join("\n")}
-INSTRUCCIÓN: Cuando evaluás la imagen y determinás la calidad morfológica, usá las tasas de blastulación reales de esta clínica para esa categoría, no los rangos bibliográficos.` : ""}
-INSTRUCCIÓN GENERAL: Ajustá las probabilidades usando estos datos reales como ancla principal.`;
-    }
+    // Sin clinicContext: el prompt queda anclado exclusivamente a referencias bibliográficas.
+    const clinicContext = "";
 
     const prompt = `Sos un sistema de IA especializado en evaluación morfológica de ovocitos humanos para medicina reproductiva. Analizás la imagen de un ovocito MII desnudado y devolvés predicciones calibradas basadas en evidencia científica actual.
 

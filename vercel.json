@@ -6,6 +6,10 @@
     "api/analyze/blastocyst.js": { "maxDuration": 30 },
     "api/analyze/clinical-protocol.js": { "maxDuration": 30 },
     "api/analyze/clinical-control.js": { "maxDuration": 30 },
-    "api/analyze/clinical-ocr.js": { "maxDuration": 30 }
-  }
+    "api/analyze/clinical-ocr.js": { "maxDuration": 30 },
+    "api/admin/purge-deleted.js": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/admin/purge-deleted", "schedule": "0 3 * * *" }
+  ]
 }

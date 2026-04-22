@@ -13,6 +13,10 @@ export default async function handler(req, res) {
   if (!(await assertWithinRateLimit(req, res))) return;
 
   try {
+    // BACKEND-016: `clinicStats` se acepta en el body para backward-compat pero
+    // NO se reinyecta en el prompt a Anthropic. Evitamos filtrar tasas de embarazo,
+    // promedios de MII y protocolos más usados (métricas operativas sensibles de
+    // la clínica) a un proveedor externo. Ver docs/AUDIT/00-SUMMARY.md → BACKEND-016.
     const {
       age,
       amh = null,
@@ -20,7 +24,6 @@ export default async function handler(req, res) {
       bmi = null,
       diagnosis = "",
       previousCycles = 0,
-      clinicStats = null,     // estadísticas reales de la clínica (opcional)
     } = req.body || {};
 
     if (age == null || Number.isNaN(Number(age))) {
@@ -34,18 +37,8 @@ export default async function handler(req, res) {
       age <= 40 ? "38-40" :
       age <= 42 ? "41-42" : ">42";
 
-    // Contexto de la clínica si hay data real suficiente
-    let clinicContext = "";
-    if (clinicStats && clinicStats[ageGroup] && clinicStats[ageGroup].cycles >= 5) {
-      const cs = clinicStats[ageGroup];
-      clinicContext = `
-DATOS REALES DE ESTA CLÍNICA (priorizar sobre referencias bibliográficas):
-Grupo etario ${ageGroup} — n=${cs.cycles} ciclos registrados:
-- Ovocitos MII promedio: ${cs.avgMII ?? "n/d"}
-- Tasa de embarazo clínico: ${cs.clinicalPregnancyRate != null ? cs.clinicalPregnancyRate + "%" : "n/d"}
-- Protocolos más usados: ${(cs.topProtocols || []).join(", ") || "n/d"}
-INSTRUCCIÓN: usá estos datos como ancla al estimar expectedOocytes y al elegir protocolo.`;
-    }
+    // Sin clinicContext: prompt anclado sólo a referencias bibliográficas + datos de la paciente de este request.
+    const clinicContext = "";
 
     const prompt = `Sos un sistema de IA especializado en medicina reproductiva. Tu rol es asistir al médico en la PLANIFICACIÓN de un protocolo de estimulación ovárica controlada (FIV/ICSI). No reemplazás al médico: tu salida es una SUGERENCIA razonada.
 
