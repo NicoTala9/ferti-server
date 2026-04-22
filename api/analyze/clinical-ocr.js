@@ -108,11 +108,25 @@ Analizá el documento y devolvé el JSON:`;
 
     const raw = response.content[0].text.trim();
     const jsonStr = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
-    const parsed = JSON.parse(jsonStr);
+
+    // BACKEND-024: si el parseo falla, es documento no evaluable (no es un 500 real).
+    // Infra failures (timeout/5xx de Anthropic) sí caen al catch externo.
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      console.warn("clinical-ocr: respuesta no parseable, devolviendo no_evaluable", parseErr?.message);
+      return res.status(200).json({
+        status: "no_evaluable",
+        rejectionReason: "No se pudo extraer datos del documento. Verificá la calidad, orientación y que el estudio corresponda al contexto seleccionado.",
+        source: "claude",
+        context,
+      });
+    }
 
     // Validación ligera por contexto
     const clean = sanitize(parsed, context);
-    return res.status(200).json({ ...clean, source: "claude", context });
+    return res.status(200).json({ ...clean, status: "evaluable", source: "claude", context });
   } catch (err) {
     console.error("clinical-ocr error:", err);
     // BACKEND-006: no exponer err.message al cliente (information leak).

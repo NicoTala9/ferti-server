@@ -64,7 +64,19 @@ Ejemplo de respuesta:
 
     const raw = response.content[0].text.trim();
     const jsonStr = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
-    const parsed = JSON.parse(jsonStr);
+
+    // BACKEND-024: si el parseo falla, es imagen no evaluable (no es un 500 real).
+    // Infra failures (timeout/5xx de Anthropic) sí caen al catch externo.
+    // Mantenemos contrato array-root para compat con callers existentes: array vacío = no_evaluable.
+    // Los callers que quieran mostrar mensaje pueden leer el header X-Analysis-Status.
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      console.warn("pgt analyze: respuesta no parseable, devolviendo no_evaluable", parseErr?.message);
+      res.setHeader("X-Analysis-Status", "no_evaluable");
+      return res.status(200).json([]);
+    }
 
     // Sanitizar
     const result = (Array.isArray(parsed) ? parsed : []).map(item => ({
@@ -76,6 +88,7 @@ Ejemplo de respuesta:
       interpretation: item.interpretation || "",
     })).filter(item => item.wellNumber !== null);
 
+    res.setHeader("X-Analysis-Status", result.length > 0 ? "evaluable" : "no_evaluable");
     return res.status(200).json(result);
   } catch (err) {
     console.error("pgt analyze error:", err);

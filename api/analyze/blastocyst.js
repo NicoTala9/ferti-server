@@ -73,6 +73,13 @@ CONTEXTO CLÍNICO:
 - Día de evaluación: D${dayOfDevelopment || 5}
 ${contextSection || "- Sin datos de otras apps vinculadas"}
 
+CALIBRACIÓN DE CONFIDENCE (CRÍTICO):
+El campo gardner.confidence NO puede ser "high" por defecto. Usá:
+- "high": SÓLO si ves con total nitidez expansión + ICM + TE, sin zonas borrosas ni luz irregular, y no dudás entre dos grados Gardner.
+- "medium": default para imágenes razonables donde alguna dimensión es borderline.
+- "low": si ICM o TE están borrosos, fuera de foco parcial, iluminación heterogénea, o si dudás entre dos grados (ej: 4AB vs 4BB).
+Regla clínica: si el embriólogo real miraría esta foto y pediría una segunda mejor → confidence NO es "high".
+
 CRITERIOS DE CLASIFICACIÓN GARDNER:
 Expansión (1-6):
 1: Blastocisto inicial, cavidad <1/2 del volumen
