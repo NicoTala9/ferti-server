@@ -53,6 +53,20 @@ export default async function handler(req, res) {
 
     const prompt = `Sos un embriólogo experto en evaluación morfológica de blastocistos. Analizá la imagen de este blastocisto humano en día ${dayOfDevelopment || 5} de desarrollo.
 
+CHEQUEO PREVIO DE EVALUABILIDAD (OBLIGATORIO — HACER ANTES DE APLICAR GARDNER):
+Antes de clasificar Gardner, verificá que la imagen sea realmente un embrión humano en vista de microscopía evaluable. Devolvé status: "no_evaluable" si se cumple CUALQUIERA de estas condiciones:
+- La imagen NO es una imagen de microscopía de un embrión/blastocisto (ej: logo, captura de pantalla, texto, foto cualquiera, paisaje, documento, imagen sólida negra/blanca/roja, ruido aleatorio, 1x1 pixel, ilustración, dibujo, ovocito sin fertilizar, cigoto temprano D1-D2, mórula D3-D4 sin cavidad, etc).
+- Hay un embrión pero está totalmente fuera de foco y no se distinguen ICM ni trofoectodermo.
+- La imagen está tan sobreexpuesta o subexpuesta que no se puede evaluar morfología (todo blanco o todo negro).
+- El encuadre no permite ver el blastocisto completo dentro de la zona pelúcida.
+- No podés identificar con alta confianza que lo que ves es un blastocisto (D5-D7).
+
+REGLA DE ORO: Ante cualquier duda → status: "no_evaluable". NO inventes clasificación Gardner. NO completes probabilidades con valores por defecto. Es MEJOR rechazar que alucinar.
+
+Si status = "no_evaluable": dejar en null los campos gardner, blastoScore, quality, morphology, predictions, recommendation y aiNotes. Sólo completar rejectionReason con el motivo específico.
+
+Si status = "evaluable": completar TODO el análisis siguiendo los criterios de abajo.
+
 CONTEXTO CLÍNICO:
 - Edad de la paciente: ${patientAge ? `${patientAge} años (${ageGroup})` : "no disponible"}
 - Tipo de cultivo: ${cultureType === "individual" ? "Individual" : "Grupal"}
@@ -87,7 +101,24 @@ ${linkedOocyte ? `- Ajustar predicciones considerando datos del ovocito de orige
 INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown.
 
 Estructura exacta requerida:
+
+Si la imagen NO es evaluable (falló el CHEQUEO PREVIO):
 {
+  "status": "no_evaluable",
+  "rejectionReason": "<motivo específico en español, ej: 'La imagen no corresponde a un blastocisto en microscopía', 'Embrión fuera de foco', 'Sobreexposición impide evaluar ICM/TE', 'Embrión en estadio D3 (mórula), no blastocisto', 'Imagen sólida sin contenido', etc>",
+  "gardner": null,
+  "blastoScore": null,
+  "quality": null,
+  "morphology": null,
+  "predictions": null,
+  "recommendation": null,
+  "aiNotes": null
+}
+
+Si la imagen ES evaluable:
+{
+  "status": "evaluable",
+  "rejectionReason": null,
   "gardner": {
     "expansion": <número 1-6>,
     "icm": "<A|B|C>",
@@ -133,6 +164,23 @@ Analizá la imagen y devolvé el JSON:`;
     const jsonStr = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
     const parsed = JSON.parse(jsonStr);
 
+    // SEC-adversarial: si Claude marcó la imagen como no evaluable, respetar la decisión.
+    // NO forzamos fallback a Gardner 4BB porque eso alucinaba análisis sobre imágenes basura
+    // (logos, 1x1 pixels, capturas de pantalla, etc). Mejor devolver status explícito al cliente.
+    if (parsed.status === "no_evaluable") {
+      return res.status(200).json({
+        status: "no_evaluable",
+        rejectionReason: parsed.rejectionReason || "La imagen no es evaluable como blastocisto",
+        gardner: null,
+        blastoScore: null,
+        quality: null,
+        morphology: null,
+        predictions: null,
+        recommendation: null,
+        aiNotes: null,
+      });
+    }
+
     // Validate and sanitize
     const expansions = [1,2,3,4,5,6];
     const grades = ["A","B","C"];
@@ -141,6 +189,8 @@ Analizá la imagen y devolvé el JSON:`;
     const te  = grades.includes(parsed.gardner?.te)  ? parsed.gardner.te  : "B";
 
     const result = {
+      status: "evaluable",
+      rejectionReason: null,
       gardner: {
         expansion: exp, icm, te,
         grade: `${exp}${icm}${te}`,

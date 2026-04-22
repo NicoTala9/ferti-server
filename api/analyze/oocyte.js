@@ -51,6 +51,21 @@ INSTRUCCIÓN GENERAL: Ajustá las probabilidades usando estos datos reales como 
 
     const prompt = `Sos un sistema de IA especializado en evaluación morfológica de ovocitos humanos para medicina reproductiva. Analizás la imagen de un ovocito MII desnudado y devolvés predicciones calibradas basadas en evidencia científica actual.
 
+CHEQUEO PREVIO DE EVALUABILIDAD (OBLIGATORIO — HACER ANTES DE LA EVALUACIÓN MORFOLÓGICA):
+Antes de aplicar los criterios Istanbul Consensus, verificá que la imagen sea realmente un ovocito humano en vista de microscopía evaluable. Devolvé status: "no_evaluable" si se cumple CUALQUIERA de estas condiciones:
+- La imagen NO es una imagen de microscopía de un ovocito (ej: logo, captura de pantalla, texto, foto cualquiera, paisaje, documento escaneado, imagen sólida negra/blanca/roja, ruido aleatorio, 1x1 pixel, ilustración, dibujo, etc).
+- Hay un ovocito pero está totalmente fuera de foco y no se distinguen membrana citoplasmática, PVS o PB1.
+- La imagen está tan sobreexpuesta o subexpuesta que no se puede evaluar citoplasma (todo blanco o todo negro).
+- El encuadre no permite ver la zona pelúcida completa ni el citoplasma interno.
+- Hay múltiples ovocitos superpuestos sin uno claramente discriminable.
+- No podés identificar con alta confianza que lo que ves es un ovocito MII.
+
+REGLA DE ORO: Ante cualquier duda → status: "no_evaluable". NO inventes morfología. NO completes probabilidades con valores por defecto. Es MEJOR rechazar que alucinar.
+
+Si status = "no_evaluable": dejar en null los campos quality, blastocystProbability, euploidyProbability, survivalProbability, morphology y notes. Sólo completar rejectionReason con el motivo específico.
+
+Si status = "evaluable": completar TODO el análisis siguiendo los criterios de abajo.
+
 REFERENCIAS CLÍNICAS:
 - ESHRE Istanbul Consensus 2024 (criterios morfológicos)
 - SART 2023 (tasas de referencia por edad)
@@ -130,7 +145,23 @@ CÁLCULO OBLIGATORIO ANTES DE RESPONDER:
 4. El resultado final = base - suma de penalizaciones. Este DEBE ser el número en el JSON.
 
 Estructura exacta requerida:
+
+Si la imagen NO es evaluable (falló el CHEQUEO PREVIO):
 {
+  "status": "no_evaluable",
+  "rejectionReason": "<motivo específico en español, ej: 'La imagen no corresponde a un ovocito en microscopía', 'Imagen fuera de foco', 'Sobreexposición impide evaluar citoplasma', 'Encuadre incompleto', 'Imagen sólida sin contenido', etc>",
+  "quality": null,
+  "blastocystProbability": null,
+  "euploidyProbability": null,
+  "survivalProbability": null,
+  "morphology": null,
+  "notes": null
+}
+
+Si la imagen ES evaluable:
+{
+  "status": "evaluable",
+  "rejectionReason": null,
   "quality": "Alto|Medio Alto|Medio Bajo|Bajo",
   "blastocystProbability": <número entero calculado según las penalizaciones de arriba>,
   "euploidyProbability": <número entero calculado según las penalizaciones de arriba>,
@@ -175,7 +206,25 @@ Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
     const jsonStr = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
     const parsed = JSON.parse(jsonStr);
 
+    // SEC-adversarial: si Claude marcó la imagen como no evaluable, respetar la decisión.
+    // NO forzamos fallback a "Medio Alto" porque eso alucinaba análisis sobre imágenes basura
+    // (logos, 1x1 pixels, capturas de pantalla, etc). Mejor devolver status explícito al cliente.
+    if (parsed.status === "no_evaluable") {
+      return res.status(200).json({
+        status: "no_evaluable",
+        rejectionReason: parsed.rejectionReason || "La imagen no es evaluable como ovocito",
+        quality: null,
+        blastocystProbability: null,
+        euploidyProbability: null,
+        survivalProbability: null,
+        morphology: null,
+        notes: null,
+      });
+    }
+
     const result = {
+      status: "evaluable",
+      rejectionReason: null,
       quality: ["Alto", "Medio Alto", "Medio Bajo", "Bajo"].includes(parsed.quality) ? parsed.quality : "Medio Alto",
       blastocystProbability: Math.min(95, Math.max(5, Math.round(parsed.blastocystProbability || 50))),
       euploidyProbability: Math.min(75, Math.max(5, Math.round(parsed.euploidyProbability || 35))),
