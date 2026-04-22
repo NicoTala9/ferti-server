@@ -7,7 +7,9 @@
     "api/analyze/clinical-protocol.js": { "maxDuration": 30 },
     "api/analyze/clinical-control.js": { "maxDuration": 30 },
     "api/analyze/clinical-ocr.js": { "maxDuration": 30 },
-    "api/admin/purge-deleted.js": { "maxDuration": 60 }
+    "api/admin/purge-deleted.js": { "maxDuration": 60 },
+    "api/auth/login.js": { "maxDuration": 15 },
+    "api/auth/verify.js": { "maxDuration": 5 }
   },
   "crons": [
     { "path": "/api/admin/purge-deleted", "schedule": "0 3 * * *" }
