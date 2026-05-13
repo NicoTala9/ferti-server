@@ -4,6 +4,7 @@ import { setCORS, handleOptions } from "../_lib/cors.js";
 import { validateBase64, validateMimeType, ALLOWED_IMAGE_MIMES } from "../_lib/validation.js";
 import { assertWithinRateLimit } from "../_lib/rateLimit.js";
 import { logSafeError } from "../_lib/logSafe.js";
+import { predictWithCNN, combineProbs, isCNNEnabled } from "../_lib/cnnClient.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -116,6 +117,40 @@ ${procedureType === "crio" ? `
 Prob. sobrevida vitrificación (ESHRE 2024):
 - Alto: 90-95% | Medio Alto: 84-91% | Medio Bajo: 76-84% | Bajo: 68-78%` : ""}
 
+EVIDENCIA CIENTÍFICA RECIENTE Y CONTEXTO BIOLÓGICO (para calibrar tus predicciones):
+
+1. OOPLASMA ES LA VARIABLE MÁS PREDICTIVA (Fjeldstad et al. 2024, Scientific Reports): la textura del ooplasma contiene la mayor parte de la información predictiva de desarrollo a blastocisto. Cuando se removieron las features del citoplasma de un modelo de IA, la capacidad predictiva cayó significativamente (AUC de 0.63 a 0.57). Las variables extracitoplásmicas (zona pelúcida, espacio perivitelino) aportan menos. Priorizá la evaluación de: granularidad del citoplasma, homogeneidad, vacuolas, cuerpos refráctiles, agregados de SER, y distribución general del ooplasma.
+
+2. LA MORFOLOGÍA DEL OVOCITO PREDICE EUPLOIDÍA (Mercuri et al. 2024, ESHRE O-004): un modelo de IA predijo el resultado de PGT-A del blastocisto resultante desde la imagen del ovocito con AUC 0.71, superando a la edad como predictor. Esto valida que las probabilidades de euploide basadas en morfología ovocitaria tienen sustento científico. No subestimes la capacidad predictiva de la morfología ovocitaria sobre la ploidía.
+
+3. CORRELACIÓN CON CALIDAD DEL BLASTOCISTO (Fjeldstad et al. 2024, RBMO): ovocitos con score alto no solo tienen mayor probabilidad de llegar a blastocisto sino que correlacionan con mejor calidad de blastocisto (mayor expansión, mejor clasificación Gardner). Un ovocito clasificado como de alta calidad tiene aproximadamente 2.6 veces más probabilidad de desarrollar un blastocisto que uno de baja calidad.
+
+4. FACTOR MASCULINO (Borges et al. 2025, F&S Science · Fjeldstad et al. 2024, RBMO): el factor masculino severo tiene impacto negligible en la capacidad predictiva del modelo de ovocitos. La calidad del ovocito predice blastulación independientemente de la calidad del semen. Si hay datos de SpermAI vinculados con DFI elevado (>25%) o morfología muy baja (<2%), ajustá la probabilidad de fecundación, NO la de blastulación.
+
+5. PREDICCIÓN DE COHORTE (Fjeldstad et al. 2024, Scientific Reports): la suma de scores individuales de los ovocitos de un caso predice la formación de 2+ blastocistos utilizables con AUC 0.77 — significativamente mejor que la predicción individual. Cuando analices múltiples ovocitos del mismo caso, además del score individual considerá el pronóstico de la cohorte completa.
+
+CONTEXTO BIOLÓGICO PARA CALIBRACIÓN:
+
+La ploidía del embrión se determina mayoritariamente durante la meiosis del ovocito, ANTES de la fecundación. Los errores cromosómicos (aneuploidías) ocurren durante la separación de cromosomas en la maduración ovocitaria y dejan señales morfológicas visibles. La llegada a blastocisto, en cambio, depende también de variables POST-fecundación que NO se ven en la imagen del ovocito: calidad del espermatozoide, técnica de ICSI, condiciones de cultivo, medio, temperatura.
+
+IMPLICANCIA: tus predicciones de euploide basadas en morfología ovocitaria tienen mayor sustento que tus predicciones de blastulación. Sé más assertivo con las probabilidades de euploide (la señal está en la imagen) y más conservador con las de blastulación (hay variables que no podés ver). Esto es consistente con la literatura: los modelos publicados logran AUC ~0.71 en euploide vs ~0.64 en blastulación con este enfoque.
+
+SEÑALES MORFOLÓGICAS DE ANEUPLOIDÍA OVOCITARIA (priorizá detectarlas):
+- Citoplasma granuloso central (no periférico) → mayor riesgo de aneuploidía
+- Agregados de SER (smooth endoplasmic reticulum) → riesgo elevado · impacto negativo mayor en euploide
+- Corpúsculo polar fragmentado o muy grande → posible error meiótico
+- Vacuolas citoplasmáticas grandes (>14μm) → asociadas a peor pronóstico genético
+- Zona pelúcida muy gruesa o irregular → asociada a menor competencia ovocitaria
+- Espacio perivitelino con abundante debris → posible indicador de estrés celular
+
+SEÑALES DE BUENA COMPETENCIA OVOCITARIA:
+- Citoplasma homogéneo, levemente granuloso (textura fina uniforme)
+- Corpúsculo polar intacto, tamaño normal, redondo
+- Zona pelúcida uniforme, grosor normal
+- Espacio perivitelino limpio, pequeño
+- Forma esférica simétrica
+- Ausencia de vacuolas y SER
+
 INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin explicaciones fuera del JSON.
 
 CÁLCULO OBLIGATORIO ANTES DE RESPONDER:
@@ -168,29 +203,38 @@ Si la imagen ES evaluable:
 
 Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
 
-    const response = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1000,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: mimeType,
-                data: base64,
+    // M#3 phase 2 · Claude + CNN en paralelo · Promise.all evita serializar
+    // latencia (Claude ~1.8s · CNN ~1.5s · paralelo = max(ambos) ~1.8s en vez
+    // de 3.3s). CNN failure NO aborta Claude (Promise.all resolverá lo que
+    // tenga · predictWithCNN ya devuelve null en error · no rejected promise).
+    const [response, cnnResult] = await Promise.all([
+      client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1000,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: mimeType,
+                  data: base64,
+                },
               },
-            },
-            {
-              type: "text",
-              text: prompt,
-            },
-          ],
-        },
-      ],
-    });
+              {
+                type: "text",
+                text: prompt,
+              },
+            ],
+          },
+        ],
+      }),
+      // CNN call · si flag off o falla · returns null y el código abajo
+      // fallbackea silently a Claude-only (zero crash UX).
+      predictWithCNN(base64, patientAge),
+    ]);
 
     const raw = response.content[0].text.trim();
     const jsonStr = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
@@ -212,12 +256,29 @@ Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
       });
     }
 
+    // Probs base de Claude (clamped a rangos clínicamente razonables · evita
+    // outliers extremos por aluciación).
+    const claudeBlasto = Math.min(95, Math.max(5, Math.round(parsed.blastocystProbability || 50)));
+    const claudeEuploide = Math.min(75, Math.max(5, Math.round(parsed.euploidyProbability || 35)));
+
+    // M#3 phase 2 · combinación Claude + CNN 50/50 cuando CNN responde OK.
+    // Si cnnResult === null (flag off · timeout · 5xx · etc) · usa solo Claude.
+    // El combine es server-side · el cliente recibe UN solo número combinado y
+    // no se entera de la arquitectura interna (encapsulación · futuro: cambiar
+    // pesos por clínica vía Smart Prompting sin tocar el cliente).
+    const finalBlasto = cnnResult
+      ? combineProbs(claudeBlasto, cnnResult.blastoProb)
+      : claudeBlasto;
+    const finalEuploide = cnnResult
+      ? combineProbs(claudeEuploide, cnnResult.euploideProb)
+      : claudeEuploide;
+
     const result = {
       status: "evaluable",
       rejectionReason: null,
       quality: ["Alto", "Medio Alto", "Medio Bajo", "Bajo"].includes(parsed.quality) ? parsed.quality : "Medio Alto",
-      blastocystProbability: Math.min(95, Math.max(5, Math.round(parsed.blastocystProbability || 50))),
-      euploidyProbability: Math.min(75, Math.max(5, Math.round(parsed.euploidyProbability || 35))),
+      blastocystProbability: finalBlasto,
+      euploidyProbability: finalEuploide,
       survivalProbability: Math.min(98, Math.max(50, Math.round(parsed.survivalProbability || 88))),
       morphology: {
         cytoplasm: parsed.morphology?.cytoplasm || "Normal",
@@ -227,6 +288,15 @@ Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
         anomalies: parsed.morphology?.anomalies || "Sin anomalías destacables",
       },
       notes: parsed.notes || "",
+      // Diagnóstico · qué motor produjo la predicción. Útil para QA + post-mortem
+      // accuracy tracking · Roadmap §6.1. NO contiene info sensible (sin imagen
+      // ni edad) · OK exponer al cliente.
+      modelMeta: {
+        cnnEnabled: isCNNEnabled(),
+        cnnUsed: !!cnnResult,
+        modelVersion: cnnResult?.modelVersion || "claude-only",
+        cnnInferenceMs: cnnResult?.inferenceMs || null,
+      },
     };
 
     return res.status(200).json(result);

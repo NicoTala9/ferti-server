@@ -75,3 +75,29 @@ export function sanitizeAge(age, defaultValue = 35) {
   if (!Number.isFinite(n)) return defaultValue;
   return Math.min(60, Math.max(15, Math.round(n)));
 }
+
+/**
+ * HTML escape · interpolation segura en email templates u otras strings que
+ * acaben en HTML. NO usar para JSON · usar JSON.stringify para eso.
+ * J.1.b · email templates recovery-{master,clinicAdmin}.
+ */
+export function escape(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+/**
+ * Valida un email string · pattern básico RFC compatible. NO valida deliverability.
+ * @returns {boolean}
+ */
+export function isValidEmail(email) {
+  if (typeof email !== "string") return false;
+  const trimmed = email.trim();
+  if (trimmed.length === 0 || trimmed.length > 320) return false;
+  // RFC 5322-lite: local@domain · domain con al menos un dot.
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+}

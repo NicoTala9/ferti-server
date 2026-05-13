@@ -46,9 +46,19 @@ export function getAdminDb() {
   if (_db) return _db;
   if (!getApps().length) {
     const sa = parseServiceAccount();
+    // J.1.f tenant-agnostic refactor (Brief Fase J §11): purgar fallback
+    // hardcoded `"oocyte-cegyr"`. El service account JSON SIEMPRE incluye
+    // project_id; si falta, es config corrupta · throw explícito mejor que
+    // silently default a CEGYR project.
+    if (!sa.project_id || typeof sa.project_id !== "string") {
+      throw new Error(
+        "FIREBASE_SERVICE_ACCOUNT.project_id missing. Verificá que el JSON " +
+        "del service account incluya el campo `project_id`."
+      );
+    }
     initializeApp({
       credential: cert(sa),
-      projectId: sa.project_id || "oocyte-cegyr",
+      projectId: sa.project_id,
     });
   }
   _db = getFirestore();

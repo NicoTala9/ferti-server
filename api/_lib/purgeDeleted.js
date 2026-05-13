@@ -35,7 +35,9 @@ export async function runPurge({ dryRun = false, retentionDays = DEFAULT_RETENTI
     errors: [],
   };
 
-  const clinicsSnap = await db.collection("clinics").get();
+  // Pre-demo fix 2026-05-08 · Sev 0-B · iteramos `platformClinics` (source of truth)
+  // porque `clinics/` solo tiene subcollections · firebase-admin no retorna phantom parents.
+  const clinicsSnap = await db.collection("platformClinics").get();
   summary.clinicsScanned = clinicsSnap.size;
 
   for (const clinicDoc of clinicsSnap.docs) {

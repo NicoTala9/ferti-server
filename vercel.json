@@ -1,4 +1,5 @@
 {
+  "outputDirectory": ".",
   "functions": {
     "api/analyze/oocyte.js": { "maxDuration": 30 },
     "api/analyze/sperm.js": { "maxDuration": 30 },
@@ -9,7 +10,13 @@
     "api/analyze/clinical-ocr.js": { "maxDuration": 30 },
     "api/admin/purge-deleted.js": { "maxDuration": 60 },
     "api/auth/login.js": { "maxDuration": 15 },
-    "api/auth/verify.js": { "maxDuration": 5 }
+    "api/auth/verify.js": { "maxDuration": 5 },
+    "api/auth/change-password.js": { "maxDuration": 15 },
+    "api/auth/firebase-login.js": { "maxDuration": 15 },
+    "api/auth/verify-firebase.js": { "maxDuration": 5 },
+    "api/auth/recovery-request.js": { "maxDuration": 15 },
+    "api/auth/recovery-confirm.js": { "maxDuration": 15 },
+    "api/training/validate-image.js": { "maxDuration": 30 }
   },
   "crons": [
     { "path": "/api/admin/purge-deleted", "schedule": "0 3 * * *" }

@@ -119,46 +119,67 @@ async function tryDynamicClinicAdmin(db, inputUsername, inputPassword) {
 async function tryNormalUser(db, inputUsername, inputPassword) {
   // Usuarios están en `clinics/{cid}/users/{uid}` con `username` prefijado como
   // "cegyr_juana". Probamos contra cada clínica — no es costoso (hay pocas).
-  const clinicsSnap = await db.collection("clinics").get();
+  //
+  // Pre-demo fix 2026-05-07 (v1): aceptamos 3 formatos de input para tolerar
+  // variaciones UX + datos legacy.
+  //
+  // Pre-demo fix 2026-05-08 (v2 · ROOT CAUSE Bug #2): iteramos `platformClinics`
+  // en lugar de `clinics` porque firebase-admin SDK `.collection("clinics").get()`
+  // NO retorna phantom parent docs (parents que solo existen via subcollections).
+  // En este repo nadie escribe `clinics/{cid}` con fields, solo subcollections.
+  // El query loop antes iteraba 0 veces · todos los normal users recibían 401.
+  // `platformClinics` es la fuente de verdad de qué clínicas existen.
+  const clinicsSnap = await db.collection("platformClinics").get();
   const lower = inputUsername.trim().toLowerCase();
   for (const cDoc of clinicsSnap.docs) {
     const cid = cDoc.id;
-    const prefixed = `${cid}_${lower}`;
-    const usersSnap = await db.collection(`clinics/${cid}/users`)
-      .where("username", "==", prefixed)
-      .limit(1)
-      .get();
-    if (usersSnap.empty) continue;
-    const userDoc = usersSnap.docs[0];
-    const u = userDoc.data();
-    if (u.role !== "user") continue;
-    const stored = u.passwordHash || u.password || "";
-    if (!stored) continue;
-    const { match, needsRehash } = await verifyPassword(inputPassword, stored);
-    if (!match) continue;
-    if (needsRehash) {
-      try {
-        const hash = await hashPassword(inputPassword);
-        await userDoc.ref.update({
-          passwordHash: hash,
-          password: "",
-          passwordUpdatedAt: Date.now(),
-        });
-      } catch (e) {
-        console.warn("[auth/login] failed to migrate user hash:", userDoc.id, e?.message);
+    const prefix = `${cid}_`;
+    // Build candidates list · siempre 2 variants para max compatibility.
+    // Pre-demo fix 2026-05-08 (v3): probar AMBOS formatos siempre · cubre case
+    // de stored data legacy (sin prefix) cuando user tipea prefixed.
+    const stripped = lower.startsWith(prefix) ? lower.slice(prefix.length) : lower;
+    const candidates = [`${prefix}${stripped}`, stripped]; // ["cegyr_edu", "edu"]
+
+    for (const candidate of candidates) {
+      const usersSnap = await db.collection(`clinics/${cid}/users`)
+        .where("username", "==", candidate)
+        .limit(1)
+        .get();
+      if (usersSnap.empty) continue;
+      const userDoc = usersSnap.docs[0];
+      const u = userDoc.data();
+      if (u.role !== "user") continue;
+      const stored = u.passwordHash || u.password || "";
+      if (!stored) continue;
+      const { match, needsRehash } = await verifyPassword(inputPassword, stored);
+      if (!match) continue;
+      if (needsRehash) {
+        try {
+          const hash = await hashPassword(inputPassword);
+          await userDoc.ref.update({
+            passwordHash: hash,
+            password: "",
+            passwordUpdatedAt: Date.now(),
+          });
+        } catch (e) {
+          console.warn("[auth/login] failed to migrate user hash:", userDoc.id, e?.message);
+        }
       }
+      return {
+        id: userDoc.id,
+        username: u.username,
+        usernameDisplay: inputUsername,
+        role: u.role,
+        clinicId: u.clinicId || cid,
+        displayName: u.displayName || null,
+        permissions: u.permissions || {},
+        active: u.active !== false,
+        isDoctor: !!u.isDoctor,
+        // B2 · profile.preferences.theme cross-device persistence (J.2.b shape v2).
+        // Si user legacy sin profile, undefined · client aplica DEFAULT_PROFILE on-read.
+        profile: u.profile || null,
+      };
     }
-    return {
-      id: userDoc.id,
-      username: u.username,
-      usernameDisplay: inputUsername,
-      role: u.role,
-      clinicId: u.clinicId || cid,
-      displayName: u.displayName || null,
-      permissions: u.permissions || {},
-      active: u.active !== false,
-      isDoctor: !!u.isDoctor,
-    };
   }
   return null;
 }
