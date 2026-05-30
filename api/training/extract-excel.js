@@ -83,13 +83,14 @@ ${csv}`;
       return res.status(200).json([]);
     }
 
+    const num = (v) => Number(String(v ?? "").replace(",", ".").trim()); // tolera coma decimal es-AR
     const result = (Array.isArray(parsed) ? parsed : []).map((item) => {
       const well = parseInt(item.well);
-      const ageNum = Number(item.age);
-      const kidNum = Number(item.kidScore);
+      const ageNum = num(item.age);
+      const kidNum = num(item.kidScore);
       return {
         well: Number.isFinite(well) ? well : null,
-        age: Number.isFinite(ageNum) ? ageNum : 0,
+        age: Number.isFinite(ageNum) && ageNum > 0 ? ageNum : null, // null (no 0) si falta → no sesga stats
         treatmentId: item.treatmentId != null ? String(item.treatmentId) : "",
         gardner: item.gardner != null ? String(item.gardner).trim() : "",
         kidScore: Number.isFinite(kidNum) && kidNum > 0 ? kidNum : null,
