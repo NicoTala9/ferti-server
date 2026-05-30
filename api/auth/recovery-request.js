@@ -73,6 +73,24 @@ async function resolveUserType(db, email) {
       clinicName: doc.data()?.name || doc.id,
     };
   }
+
+  // Post-migración Firebase Auth (PR-B): clinicAdmins y usuarios normales viven en
+  // clinics/{cid}/users con `email` + doc id == uid. Buscamos por email iterando
+  // platformClinics (mismo patrón que /api/auth/login · evita índice collectionGroup).
+  // Esto habilita recovery para TODOS los roles, no solo master/clinicAdmin.
+  const clinicsSnap = await db.collection("platformClinics").get();
+  for (const c of clinicsSnap.docs) {
+    const us = await db
+      .collection(`clinics/${c.id}/users`)
+      .where("email", "==", norm)
+      .limit(1)
+      .get();
+    if (!us.empty) {
+      const d = us.docs[0];
+      const role = d.data()?.role === "clinicAdmin" ? "clinicAdmin" : "user";
+      return { userType: role, uid: d.id, clinicName: c.data()?.name || c.id };
+    }
+  }
   return null;
 }
 

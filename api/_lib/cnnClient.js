@@ -9,10 +9,12 @@
 //   - CNN_API_TOKEN      → bearer token compartido (mismo valor en Cloud Run)
 //   - CNN_ENABLED        → "true" activa · cualquier otra cosa = disabled
 //
-// Latency target · p95 ~2s incluyendo network. Timeout duro 8s (cubre cold
-// start residual + inferencia 12 modelos). Si timeout · fallback Claude-only.
+// Latency target · p95 ~2-3s con instance warm. Timeout duro 60s para cubrir
+// cold start de Cloud Run con scale-to-zero (12 modelos + TF init ~30-35s) ·
+// si timeout · fallback Claude-only. Cuando flipemos a min_instances=1 esto
+// se puede bajar a 10s.
 
-const CNN_TIMEOUT_MS = 8000;
+const CNN_TIMEOUT_MS = 60000;
 
 export function isCNNEnabled() {
   return process.env.CNN_ENABLED === "true";
@@ -79,16 +81,35 @@ export async function predictWithCNN(base64, edad) {
 }
 
 /**
- * Combina prob Claude + prob CNN 50/50 · ambos inputs en escala 0-100 o 0-1.
+ * Combina prob Claude + prob CNN · ambos inputs en escala 0-100 o 0-1.
+ * Pesos actualizados 2026-05-14 (segunda iteración) · 70% Claude / 30% CNN.
+ *
+ * Rationale (evidencia · audit 4 imágenes):
+ *   Probamos 4 ovocitos con outcomes conocidos (2 positivos, 2 negativos):
+ *     Claude blasto · positivos 66-73 ↔ negativos 51-59 · spread 7-22pp ✅
+ *     CNN blasto · positivos 47-51 ↔ negativos 47-48 · spread 0-4pp ❌
+ *   La CNN blasto está saturada cerca de 0.50 · no discrimina extremos.
+ *   La CNN euploide discrimina ligeramente mejor (spread 5-12pp) pero
+ *   también más débil que Claude (11-32pp).
+ *
+ * Hipótesis · 984 casos CEGYR retro podrían no ser suficientes para que
+ * la CNN aprenda discriminación significativa, especialmente blasto que
+ * depende de variables POST-fecundación no visibles en el ovocito.
+ *
+ * Acción · Claude domina (70%) · CNN como second-opinion leve (30%).
+ * Si batch validation prospectiva (>50 casos) muestra CNN AUC > Claude,
+ * revertir. Si la cnn AUC sigue baja · considerar Claude-only o re-train
+ * con dataset más grande.
+ *
  * Tolera input mixto · detecta escala por magnitud.
  * Si solo uno válido · returns ese (sin re-weight).
  *
  * @param {number} claudeProb  Probabilidad Claude (escala 0-100 esperada)
  * @param {number} cnnProb     Probabilidad CNN (escala 0-1 del backend)
- * @param {number} w           Peso de Claude (default 0.5)
+ * @param {number} w           Peso de Claude (default 0.7 · 30% CNN)
  * @returns {number}           Probabilidad combinada en escala 0-100 entero
  */
-export function combineProbs(claudeProb, cnnProb, w = 0.5) {
+export function combineProbs(claudeProb, cnnProb, w = 0.7) {
   const c = Number(claudeProb);
   // CNN service retorna 0-1 · escalamos a 0-100 para combinar
   const n = Number.isFinite(Number(cnnProb)) ? Number(cnnProb) * 100 : NaN;

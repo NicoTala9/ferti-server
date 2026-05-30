@@ -11,6 +11,7 @@
 
 import { assertAllowedOrigin } from "../_lib/auth.js";
 import { setCORS, handleOptions } from "../_lib/cors.js";
+import { getAdminDb } from "../_lib/firebaseAdmin.js";
 import { logSafeError } from "../_lib/logSafe.js";
 import { getAuth } from "firebase-admin/auth";
 
@@ -41,6 +42,11 @@ export default async function handler(req, res) {
   if (!idToken) return res.status(401).json({ error: "Missing Authorization Bearer" });
 
   try {
+    // initializeApp() ANTES de getAuth() · en cold start getAuth() sin app tira
+    // app/no-app (mismo bug latente que J.1.a en firebase-login + clinics/users
+    // upsert · commit bd4a572). Este endpoint no lo usa el flujo actual; fix
+    // preventivo.
+    getAdminDb();
     const decoded = await getAuth().verifyIdToken(idToken, true);
     return res.status(200).json({
       uid: decoded.uid,

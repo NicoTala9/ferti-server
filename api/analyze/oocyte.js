@@ -25,7 +25,11 @@ export default async function handler(req, res) {
     // pacientes individuales) filtra métricas operativas sensibles. El calibrado por
     // clínica, si hace falta recuperarlo, se hace server-side post-respuesta, no
     // enviando los números al modelo. Ver docs/AUDIT/00-SUMMARY.md → BACKEND-016.
-    const { base64, mimeType = "image/jpeg", patientAge = 35, procedureType = "fresco" } = req.body;
+    const { base64, mimeType = "image/jpeg", patientAge = 35, procedureType = "fresco", language: rawLang = "es" } = req.body;
+    // i18n · idioma del análisis · ES default · solo aceptamos ES/EN para evitar
+    // prompt-injection vía locale field. Claude responde TODOS los free-text
+    // fields (morphology, notes, rejectionReason) en este idioma.
+    const language = (rawLang === "en") ? "en" : "es";
 
     // BACKEND-002 / BACKEND-005: validar payload size + mime whitelist
     if (!validateBase64(base64, res)) return;
@@ -40,7 +44,15 @@ export default async function handler(req, res) {
     // Sin clinicContext: el prompt queda anclado exclusivamente a referencias bibliográficas.
     const clinicContext = "";
 
-    const prompt = `Sos un sistema de IA especializado en evaluación morfológica de ovocitos humanos para medicina reproductiva. Analizás la imagen de un ovocito MII desnudado y devolvés predicciones calibradas basadas en evidencia científica actual.
+    // i18n · directiva de idioma para los free-text fields de la respuesta.
+     // El prompt principal queda en español (mejor calidad técnica · es la lengua
+     // en la que se afinó · cambiar a EN degradaría adherencia al SISTEMA DE
+     // SCORING). Solo los OUTPUT free-text fields cambian de idioma.
+    const langDirective = language === "en"
+      ? `\n\nLANGUAGE OF OUTPUT: Respond with all free-text fields (morphology.cytoplasm, morphology.perivitellineSpace, morphology.polarBody, morphology.zonaPellucida, morphology.anomalies, notes, rejectionReason) IN ENGLISH. The JSON keys and enum values (quality: "Alto"|"Medio Alto"|"Medio Bajo"|"Bajo", status: "evaluable"|"no_evaluable") remain EXACTLY as specified — do NOT translate them. Only translate human-readable descriptions.`
+      : `\n\nIDIOMA DE LA RESPUESTA: Respondé los free-text fields (morphology.*, notes, rejectionReason) en ESPAÑOL.`;
+
+    const prompt = `Sos un sistema de IA especializado en evaluación morfológica de ovocitos humanos para medicina reproductiva. Analizás la imagen de un ovocito MII desnudado y devolvés predicciones calibradas basadas en evidencia científica actual.${langDirective}
 
 CHEQUEO PREVIO DE EVALUABILIDAD (OBLIGATORIO — HACER ANTES DE LA EVALUACIÓN MORFOLÓGICA):
 Antes de aplicar los criterios Istanbul Consensus, verificá que la imagen sea realmente un ovocito humano en vista de microscopía evaluable. Devolvé status: "no_evaluable" si se cumple CUALQUIERA de estas condiciones:
@@ -90,29 +102,72 @@ Evaluá con precisión estos parámetros visibles en la imagen:
    - Grosor: uniforme normal (óptimo) / delgada / gruesa / irregular
    - Birefringencia: alta (óptimo) / reducida → predictor de fertilización (Polscope)
 
-CALIBRACIÓN DE PROBABILIDADES:
-Los modelos de IA actuales tienen AUC 0.62-0.80. Sé conservador y calibrado — no sobreestimes.
+SISTEMA DE SCORING MORFOLÓGICO — CONTINUO, NO BUCKETED:
+Tu output NO debe ser bucketeado por calidad ("todos los Medio Alto = 58%"). Cada ovocito
+es único · si difieren en CUALQUIER parámetro morfológico (aunque sea sutilmente), los
+números DEBEN diferir mínimo 2-3pp. La variación es OBLIGATORIA · ovocitos morfológicamente
+idénticos son extremadamente raros · si te encontrás dando el mismo número a dos ovocitos
+distintos, RE-EVALUÁ los detalles finos.
 
-Prob. blastocisto base por calidad morfológica:
-- Alto: 72-82% | Medio Alto: 52-67% | Medio Bajo: 32-48% | Bajo: 12-30%
+PASO 1 · Scoring por parámetro (escala 0-10 continua · USÁ TODA la escala):
+- Citoplasma (peso 60% · MÁS predictivo según Fjeldstad 2024 · ooplasma carga
+  mayoría de la señal · AUC drop 0.63→0.57 al removerlo):
+    10 = homogéneo perfecto · 8 = granularidad fina muy leve · 6 = granularidad fina
+    moderada · 4 = granularidad gruesa o vacuolas pequeñas · 2 = SER presente o vacuolas
+    grandes · 0 = inclusiones múltiples o citoplasma severamente alterado
+- Espacio perivitelino · PVS (peso 18% · señal de euploide · Mercuri 2024):
+    10 = mínimo limpio · 8 = mínimo con leve debris · 6 = moderado limpio · 4 = moderado
+    granular · 2 = grande con debris · 0 = enorme/severamente alterado
+- Corpúsculo polar 1 · PB1 (peso 12%):
+    10 = íntegro tamaño normal · 8 = íntegro tamaño leve atípico · 6 = leve fragmentación
+    · 4 = fragmentación moderada · 2 = muy fragmentado o gigante · 0 = ausente/reabsorbido
+- Zona pelúcida · ZP (peso 10%):
+    10 = uniforme grosor normal · 8 = uniforme leve variación · 6 = leve irregularidad
+    · 4 = engrosada o irregular · 2 = muy irregular/septos · 0 = colapsada/dañada
 
-Prob. euploide base por grupo etario (SART 2023):
-- <35: 48-58% | 35-37: 38-48% | 38-40: 28-38% | 41-42: 20-30% | >42: 12-22%
+PASO 2 · Score morfológico final = suma ponderada (resultado 0-10):
+    morphScore = (citoplasma × 0.60) + (PVS × 0.18) + (PB1 × 0.12) + (ZP × 0.10)
 
-Ajuste morfológico sobre prob. euploide:
-- Citoplasma homogéneo + PVS mínimo + PB1 íntegro + ZP uniforme: +5-8%
-- Alteraciones leves (1-2 parámetros): 0%
-- Alteraciones moderadas (2-3 parámetros): -5-10%
-- Alteraciones severas o SER presente: -10-18%
+PASO 3 · Mapeá a quality category (informativo · pero el número de probabilidad NO lo
+toma de acá · lo calculás en paso 4-5):
+    morphScore ≥ 8.5: "Alto"
+    morphScore 6.5-8.4: "Medio Alto"
+    morphScore 4.5-6.4: "Medio Bajo"
+    morphScore < 4.5: "Bajo"
 
-VARIACIÓN ENTRE OVOCITOS — MUY IMPORTANTE:
-Cada ovocito es único. Los valores numéricos DEBEN reflejar exactamente lo que ves en la imagen:
-- Si el citoplasma tiene granularidad fina → bajar blasto 3-6% respecto al óptimo
-- Si el PVS es moderado → bajar euploide 2-4%
-- Si el PB1 está fragmentado → bajar euploide 4-8%
-- Si la ZP es irregular o engrosada → bajar blasto 2-5%
-- Si todo es óptimo → usar el valor alto del rango
-Nunca uses el mismo número para dos ovocitos distintos a menos que sean morfológicamente idénticos en todos los parámetros.
+PASO 4 · Probabilidad de blastulación (continua):
+    Base etaria blasto (SART 2023):
+    - <35: 60% | 35-37: 55% | 38-40: 50% | 41-42: 42% | >42: 32%
+
+    Modificador morfológico continuo:
+    modBlasto = (morphScore - 5.5) × 4
+    (score 10 → +18 · score 5.5 → 0 · score 0 → -22)
+
+    blastoProb = base_etaria_blasto + modBlasto
+    (clamped luego al rango 5-95)
+
+PASO 5 · Probabilidad de euploide (continua):
+    Base etaria euploide (SART 2023):
+    - <35: 53% | 35-37: 43% | 38-40: 33% | 41-42: 25% | >42: 17%
+
+    Modificador morfológico continuo:
+    modEuploide = (morphScore - 5.5) × 3
+    (score 10 → +13.5 · score 5.5 → 0 · score 0 → -16.5)
+
+    Ajustes adicionales (SOLO si detectás claramente · acumulan):
+    - SER presente: -8 puntos extra
+    - PB1 muy fragmentado (score PB1 ≤ 3): -5 puntos extra
+    - Citoplasma granuloso CENTRAL marcado (no periférico): -3 puntos extra
+
+    euploideProb = base_etaria_euploide + modEuploide + ajustes_adicionales
+    (clamped luego al rango 5-75)
+
+REGLA DE VARIACIÓN OBLIGATORIA:
+Cada vez que analizás un ovocito, el morphScore debe reflejar diferencias finas. Si ves
+un ovocito con citoplasma "homogéneo, sin anomalías" pero con leve sombra de granularidad
+periférica · ese es 8 (no 10). Si otro tiene citoplasma "homogéneo sin anomalías" y
+absolutamente uniforme · ese es 9 o 10. Esa diferencia (8 vs 9) genera 4 puntos de
+diferencia en blasto · suficiente para distinguir. Tu trabajo es CAPTURAR estas diferencias.
 ${procedureType === "crio" ? `
 Prob. sobrevida vitrificación (ESHRE 2024):
 - Alto: 90-95% | Medio Alto: 84-91% | Medio Bajo: 76-84% | Bajo: 68-78%` : ""}
@@ -153,28 +208,47 @@ SEÑALES DE BUENA COMPETENCIA OVOCITARIA:
 
 INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin explicaciones fuera del JSON.
 
-CÁLCULO OBLIGATORIO ANTES DE RESPONDER:
-1. Identificá la calidad morfológica (Alto/Medio Alto/Medio Bajo/Bajo)
-2. Tomá el valor BASE del rango (ej: Medio Alto → blasto base = 59%)
-3. Para cada parámetro con alteración, restá exactamente:
-   - Granularidad fina: -3% blasto
-   - Granularidad gruesa o inclusiones: -8% blasto
-   - Vacuolas pequeñas: -4% blasto
-   - Vacuolas grandes: -10% blasto
-   - PVS moderado: -2% euploide
-   - PVS grande: -5% euploide
-   - PB1 fragmentado leve: -4% euploide
-   - PB1 fragmentado severo: -8% euploide
-   - ZP irregular o gruesa: -3% blasto
-   - SER presente: -12% blasto, -8% euploide
-4. El resultado final = base - suma de penalizaciones. Este DEBE ser el número en el JSON.
+CÁLCULO OBLIGATORIO ANTES DE RESPONDER (sistema continuo del SISTEMA DE SCORING):
+1. Scoring por parámetro (usá DECIMALES · escala 0.0-10.0 con paso 0.5 mínimo):
+   citoplasma_score = ?.?, pvs_score = ?.?, pb1_score = ?.?, zp_score = ?.?
+   Los 4 deben aparecer EXPLÍCITAMENTE en el JSON como números decimales.
+2. morphScore = (citoplasma_score × 0.60) + (pvs_score × 0.18) + (pb1_score × 0.12) + (zp_score × 0.10)
+   Resultado con 1 decimal. Debe aparecer en el JSON.
+3. quality (informativo) según ranges arriba
+4. blastoProb = base_etaria_blasto + (morphScore - 5.5) × 4
+5. euploideProb = base_etaria_euploide + (morphScore - 5.5) × 3 + ajustes_adicionales
+6. Redondeá a entero. Clamp final blasto [5-95] · euploide [5-75].
+
+REGLAS ANTI-ANCHORING (CRÍTICAS · violarlas devuelve análisis inútil):
+
+A. PROHIBIDO devolver los siguientes valores "ancla" para blastoProb (a menos que
+   tu morphScore matemáticamente te dé exactamente ese número):
+   50, 55, 58, 60, 62, 65, 70. Si tu cálculo natural pasa por ahí, perturbalo
+   ±1 según el detalle morfológico más relevante que viste.
+
+B. PROHIBIDO devolver los siguientes valores "ancla" para euploideProb:
+   30, 33, 35, 38, 40, 43, 45. Misma regla · perturbá ±1.
+
+C. PROHIBIDO usar el mismo morphScore para dos ovocitos sucesivos · cada ovocito
+   tiene una historia visual única · si te encontrás dando exactamente "7.0" otra
+   vez, MIRÁ DE NUEVO el citoplasma · ¿hay leve textura periférica más marcada?
+   ¿granos más distribuidos? ¿algún halo en la zona pelúcida? Eso cambia el score
+   en al menos 0.5. La variación es OBLIGATORIA · ovocitos morfológicamente
+   idénticos al pixel son extremadamente raros.
+
+D. USÁ decimales en los sub-scores. Un citoplasma "muy bueno con leve granularidad
+   periférica" es 8.5 · no 9 ni 8. Un PVS "moderado pero limpio" es 6.5 · no 6 ni 7.
+   Tu morphScore final puede tener 1 decimal (ej. 7.3, 8.1, 6.7).
+
+E. Si al evaluar te encontrás dudando entre dos sub-scores adyacentes (ej. ¿es 7 u 8?),
+   elegí 7.5 o ajustá con ±0.2 según cuál parámetro te llama más la atención.
 
 Estructura exacta requerida:
 
 Si la imagen NO es evaluable (falló el CHEQUEO PREVIO):
 {
   "status": "no_evaluable",
-  "rejectionReason": "<motivo específico en español, ej: 'La imagen no corresponde a un ovocito en microscopía', 'Imagen fuera de foco', 'Sobreexposición impide evaluar citoplasma', 'Encuadre incompleto', 'Imagen sólida sin contenido', etc>",
+  "rejectionReason": "<specific reason in the OUTPUT LANGUAGE specified at the top, e.g.: 'Image does not correspond to a microscopy oocyte', 'Out-of-focus image', 'Overexposure prevents cytoplasm evaluation', 'Incomplete framing', 'Solid image with no content', etc>",
   "quality": null,
   "blastocystProbability": null,
   "euploidyProbability": null,
@@ -187,9 +261,16 @@ Si la imagen ES evaluable:
 {
   "status": "evaluable",
   "rejectionReason": null,
+  "scores": {
+    "citoplasma_score": <decimal 0.0-10.0 con 1 decimal · obligatorio>,
+    "pvs_score": <decimal 0.0-10.0 con 1 decimal · obligatorio>,
+    "pb1_score": <decimal 0.0-10.0 con 1 decimal · obligatorio>,
+    "zp_score": <decimal 0.0-10.0 con 1 decimal · obligatorio>,
+    "morphScore": <decimal 0.0-10.0 calculado como suma ponderada · 1 decimal>
+  },
   "quality": "Alto|Medio Alto|Medio Bajo|Bajo",
-  "blastocystProbability": <número entero calculado según las penalizaciones de arriba>,
-  "euploidyProbability": <número entero calculado según las penalizaciones de arriba>,
+  "blastocystProbability": <número entero · regla A anti-anchoring · respetá morphScore>,
+  "euploidyProbability": <número entero · regla B anti-anchoring · respetá morphScore>,
   "survivalProbability": <número entero 50-98>,
   "morphology": {
     "cytoplasm": "<descripción morfológica concisa: granularidad, vacuolas, inclusiones>",
@@ -198,19 +279,26 @@ Si la imagen ES evaluable:
     "zonaPellucida": "<grosor y uniformidad>",
     "anomalies": "<anomalías relevantes detectadas, o 'Sin anomalías destacables'>"
   },
-  "notes": "<observación clínica en español: hallazgo morfológico principal y su implicación pronóstica, 1-2 oraciones>"
+  "notes": "<clinical observation in the OUTPUT LANGUAGE specified at the top · MUST mention at least 1 specific visual detail that differentiates THIS oocyte from a 'generic Medio Alto' oocyte>"
 }
 
 Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
 
-    // M#3 phase 2 · Claude + CNN en paralelo · Promise.all evita serializar
-    // latencia (Claude ~1.8s · CNN ~1.5s · paralelo = max(ambos) ~1.8s en vez
-    // de 3.3s). CNN failure NO aborta Claude (Promise.all resolverá lo que
-    // tenga · predictWithCNN ya devuelve null en error · no rejected promise).
-    const [response, cnnResult] = await Promise.all([
+    // M#3 phase 2 · Claude + CNN en paralelo · Promise.allSettled NO aborta
+    // si uno falla (Audit P1 fix 2026-05-14 · antes Promise.all hacía que un
+    // 429 de Anthropic descarte el CNN result aunque haya respondido OK).
+    // Latencia paralelo · max(Claude ~1.8s, CNN ~1.5s) ≈ ~1.8s vs serial 3.3s.
+    const settled = await Promise.allSettled([
       client.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 1000,
+        // Sonnet 4.5 · upgrade desde Haiku 4.5 · 2026-05-14. Razón: Haiku tenía
+        // discriminación visual limitada para diferencias finas dentro de mismo
+        // bucket morfológico (todos los ovocitos Medio Alto edad 38 daban 58/38).
+        // Sonnet tiene 3x mejor visión · costo extra ~$2/mo a escala 250 análisis.
+        // Si latency es problema (Sonnet 2-3s vs Haiku 1.5s), volver a Haiku · pero
+        // perdemos la granularidad de scoring que el owner necesita para validación.
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: 1500,
+        temperature: 1,
         messages: [
           {
             role: "user",
@@ -236,6 +324,24 @@ Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
       predictWithCNN(base64, patientAge),
     ]);
 
+    // Unwrap allSettled · Claude SÍ es required (sin Claude no hay morfología
+    // ni quality · no podemos devolver análisis útil) · CNN es opcional.
+    const claudeSettled = settled[0];
+    const cnnSettled = settled[1];
+    if (claudeSettled.status === "rejected") {
+      // Re-tirar para caer al catch existente y devolver 500 limpio. Cliente
+      // ve "Analysis failed" y reintenta. CNN result si lo hubo se pierde · OK
+      // porque mostrar CNN-only sin morfología/quality sería confuso.
+      throw claudeSettled.reason;
+    }
+    const response = claudeSettled.value;
+    // predictWithCNN ya devuelve null en error · pero si lanza por bug (no
+    // debería) · allSettled lo captura · usamos null y log defensivo.
+    const cnnResult = cnnSettled.status === "fulfilled" ? cnnSettled.value : null;
+    if (cnnSettled.status === "rejected") {
+      console.warn("[oocyte] CNN predict threw unexpectedly:", cnnSettled.reason?.message || cnnSettled.reason);
+    }
+
     const raw = response.content[0].text.trim();
     const jsonStr = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
     const parsed = JSON.parse(jsonStr);
@@ -246,7 +352,7 @@ Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
     if (parsed.status === "no_evaluable") {
       return res.status(200).json({
         status: "no_evaluable",
-        rejectionReason: parsed.rejectionReason || "La imagen no es evaluable como ovocito",
+        rejectionReason: parsed.rejectionReason || (language === "en" ? "Image is not evaluable as an oocyte" : "La imagen no es evaluable como ovocito"),
         quality: null,
         blastocystProbability: null,
         euploidyProbability: null,
@@ -281,21 +387,51 @@ Analizá la imagen con criterios Istanbul Consensus 2024 y devolvé el JSON:`;
       euploidyProbability: finalEuploide,
       survivalProbability: Math.min(98, Math.max(50, Math.round(parsed.survivalProbability || 88))),
       morphology: {
-        cytoplasm: parsed.morphology?.cytoplasm || "Normal",
-        perivitellineSpace: parsed.morphology?.perivitellineSpace || "Normal",
-        polarBody: parsed.morphology?.polarBody || "Íntegro",
-        zonaPellucida: parsed.morphology?.zonaPellucida || "Normal",
-        anomalies: parsed.morphology?.anomalies || "Sin anomalías destacables",
+        cytoplasm: parsed.morphology?.cytoplasm || (language === "en" ? "Normal" : "Normal"),
+        perivitellineSpace: parsed.morphology?.perivitellineSpace || (language === "en" ? "Normal" : "Normal"),
+        polarBody: parsed.morphology?.polarBody || (language === "en" ? "Intact" : "Íntegro"),
+        zonaPellucida: parsed.morphology?.zonaPellucida || (language === "en" ? "Normal" : "Normal"),
+        anomalies: parsed.morphology?.anomalies || (language === "en" ? "No notable anomalies" : "Sin anomalías destacables"),
       },
       notes: parsed.notes || "",
       // Diagnóstico · qué motor produjo la predicción. Útil para QA + post-mortem
-      // accuracy tracking · Roadmap §6.1. NO contiene info sensible (sin imagen
-      // ni edad) · OK exponer al cliente.
+      // accuracy tracking · Roadmap §6.1 + Track C calibration view. NO contiene
+      // info sensible (sin imagen ni edad) · OK exponer al cliente.
+      //
+      // claudeRaw/cnnRaw expuestos por separado (escala 0-100) para que el cliente
+      // los pueda persistir en Firestore y luego graficar Claude-only vs CNN-only
+      // vs Combinado side-by-side. CNN viene del Cloud Run en escala 0-1 · acá
+      // escalamos a 0-100 entero para consistencia con Claude.
       modelMeta: {
         cnnEnabled: isCNNEnabled(),
         cnnUsed: !!cnnResult,
         modelVersion: cnnResult?.modelVersion || "claude-only",
         cnnInferenceMs: cnnResult?.inferenceMs || null,
+        claudeModel: "claude-sonnet-4-5-20250929",
+        claudeRaw: {
+          blasto: claudeBlasto,
+          euploide: claudeEuploide,
+        },
+        // Sub-scores morfológicos de Claude (post-rewrite prompt 2026-05-14).
+        // Útil para detectar bucketing oculto · si todos los ovocitos del
+        // batch tienen mismo morphScore o muy similar, validación visual fallida.
+        claudeScores: parsed.scores ? {
+          citoplasma: typeof parsed.scores.citoplasma_score === "number" ? parsed.scores.citoplasma_score : null,
+          pvs: typeof parsed.scores.pvs_score === "number" ? parsed.scores.pvs_score : null,
+          pb1: typeof parsed.scores.pb1_score === "number" ? parsed.scores.pb1_score : null,
+          zp: typeof parsed.scores.zp_score === "number" ? parsed.scores.zp_score : null,
+          morphScore: typeof parsed.scores.morphScore === "number" ? parsed.scores.morphScore : null,
+        } : null,
+        cnnRaw: cnnResult ? {
+          blasto: Math.round(cnnResult.blastoProb * 100),
+          euploide: Math.round(cnnResult.euploideProb * 100),
+        } : null,
+        // Diagnóstico calibración 2026-05-14 · breakdown per-version-per-fold
+        // del ensemble · permite comparar predicciones individuales con el
+        // notebook · detecta divergencias preprocessing/ensemble math/loading.
+        // Si AUC notebook 0.686 pero todos los outputs ~0.5 en producción ·
+        // posible mala calibración del modelo (no bug nuestro).
+        cnnDetail: cnnResult?.raw || null,
       },
     };
 

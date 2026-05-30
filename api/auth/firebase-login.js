@@ -122,13 +122,17 @@ export default async function handler(req, res) {
   if (!idToken) return res.status(400).json({ error: "idToken requerido" });
 
   try {
+    // Inicializa el Firebase Admin default app ANTES de usar getAuth(): en cold
+    // start, sin app inicializada, getAuth().verifyIdToken() tira y cae al catch
+    // genérico ("Invalid ID token"). getAdminDb() corre initializeApp(). (Bug
+    // latente J.1.a · surfaceado al activar FIREBASE_AUTH_ENABLED por 1ª vez.)
+    const db = getAdminDb();
     const decoded = await getAuth().verifyIdToken(idToken, true /* checkRevoked */);
     const fbUser = await getAuth().getUser(decoded.uid);
     if (fbUser.disabled) {
       return res.status(403).json({ error: "Usuario deshabilitado" });
     }
 
-    const db = getAdminDb();
     const user = await hydrateUser(db, fbUser, decoded);
 
     if (user.active === false) {

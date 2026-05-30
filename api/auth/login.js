@@ -8,11 +8,21 @@
 // del cliente los dejaban leer — un bug de rules era credenciales filtradas
 // para toda la plataforma.
 //
-// Este endpoint replica la escalera del antiguo authUser() pero en el servidor:
-//   1. Master Admin (env var)
-//   2. Clinic Admin CEGYR (env var)
-//   3. Dynamic Clinic Admins (platformClinics.clinicAdminPassword)
-//   4. Usuarios normales (clinics/{cid}/users con prefijo "clinicId_username")
+// Este endpoint replica la escalera del antiguo authUser() pero en el servidor.
+// Para los roles modernos (masterAdmin) el login va por /api/auth/firebase-login;
+// este endpoint solo cubre coexistencia bcrypt-legacy:
+//   1. Dynamic Clinic Admins (platformClinics.clinicAdminPasswordHash) ← coexistencia
+//   2. Usuarios normales (clinics/{cid}/users con prefijo "clinicId_username") ← coexistencia
+//
+// Auth modernization · post-CEGYR-as-normal:
+//   - Scope B-c (4533432): removido el fast-path hardcoded CEGYR (env FERTI_CEGYR_*).
+//   - MASTER (este commit): removido buildMasterUser + tryHardcodedAdmin · master
+//     ahora loguea exclusivamente vía /api/auth/firebase-login · `masterAdmins/{uid}`
+//     hidrata el user shape (clinicId:null + role:masterAdmin via custom claim).
+//     Helper tryHardcodedAdmin queda obsoleto (sin callers) · removido.
+//
+// Las env vars FERTI_MASTER_* y FERTI_CEGYR_* quedan dead en Vercel (cleanup
+// follow-up del owner).
 //
 // Los pasos 3 y 4 leen con firebase-admin (bypass de rules), así los passwords
 // NO tienen que estar legibles desde el cliente. Las reglas de Firestore para
@@ -24,6 +34,7 @@ import { getAdminDb } from "../_lib/firebaseAdmin.js";
 import { hashPassword, verifyPassword } from "../_lib/password.js";
 import { signSession } from "../_lib/jwt.js";
 import { logSafeError } from "../_lib/logSafe.js";
+import { checkLockout, recordFailedAttempt, clearAttempts, MAX_ATTEMPTS } from "../_lib/loginLockout.js";
 
 const MAX_BODY_BYTES = 10 * 1024; // 10 KB. Un login no necesita más.
 
@@ -34,51 +45,6 @@ function readBody(req) {
     try { return JSON.parse(req.body); } catch { return null; }
   }
   return null;
-}
-
-function buildMasterUser() {
-  const username = process.env.FERTI_MASTER_USERNAME || "FertiAdmin";
-  const passwordPlain = process.env.FERTI_MASTER_PASSWORD || "";
-  const passwordHash = process.env.FERTI_MASTER_PASSWORD_HASH || "";
-  return {
-    id: "__master__",
-    username,
-    passwordPlain,
-    passwordHash,
-    role: "masterAdmin",
-    displayName: "Master Admin",
-    clinicId: null,
-    permissions: { analysis: true, portal: true, stats: true, training: true, admin: true },
-  };
-}
-
-function buildCegyrAdmin() {
-  const username = process.env.FERTI_CEGYR_USERNAME || "Laboratoriocegyr";
-  const passwordPlain = process.env.FERTI_CEGYR_PASSWORD || "";
-  const passwordHash = process.env.FERTI_CEGYR_PASSWORD_HASH || "";
-  return {
-    id: "__clinicadmin_cegyr__",
-    username,
-    passwordPlain,
-    passwordHash,
-    role: "clinicAdmin",
-    displayName: "Administrador CEGYR",
-    clinicId: "cegyr",
-    permissions: { analysis: true, portal: true, stats: true, training: true, admin: true },
-  };
-}
-
-async function tryHardcodedAdmin(admin, inputUsername, inputPassword) {
-  if (admin.username !== inputUsername) return null;
-  // Preferimos hash; si no hay hash pero hay plaintext (fallback de bootstrap),
-  // usamos plaintext. Nunca matcheamos contra string vacío.
-  const stored = admin.passwordHash || admin.passwordPlain;
-  if (!stored) return null;
-  const { match } = await verifyPassword(inputPassword, stored);
-  if (!match) return null;
-  // Lo que devolvemos para JWT — sin password.
-  const { passwordPlain: _p, passwordHash: _h, ...safe } = admin;
-  return safe;
 }
 
 async function tryDynamicClinicAdmin(db, inputUsername, inputPassword) {
@@ -211,28 +177,36 @@ export default async function handler(req, res) {
   }
 
   try {
-    const master = buildMasterUser();
-    const cegyr = buildCegyrAdmin();
-
-    let user =
-      (await tryHardcodedAdmin(master, username, password)) ||
-      (await tryHardcodedAdmin(cegyr, username, password));
-
-    if (!user) {
-      const db = getAdminDb();
-      user =
-        (await tryDynamicClinicAdmin(db, username, password)) ||
-        (await tryNormalUser(db, username, password));
+    // Account lockout (PR-C · pedido owner): bloqueo por cuenta tras MAX_ATTEMPTS
+    // fallos en la ventana. Complementa el rate-limit por IP. Soft-fail si Upstash
+    // no está configurado (no bloquea logins legítimos).
+    const lock = await checkLockout(username);
+    if (lock.locked) {
+      const mins = Math.ceil((lock.retryAfterSec || 0) / 60);
+      return res.status(429).json({
+        error: `Cuenta bloqueada por demasiados intentos. Probá de nuevo en ${mins} min.`,
+        retryAfterSec: lock.retryAfterSec,
+      });
     }
 
+    const db = getAdminDb();
+    let user =
+      (await tryDynamicClinicAdmin(db, username, password)) ||
+      (await tryNormalUser(db, username, password));
+
     if (!user) {
+      // Credenciales inválidas → registramos el intento fallido (anti fuerza bruta).
+      const attempts = await recordFailedAttempt(username);
+      const remaining = Math.max(0, MAX_ATTEMPTS - attempts);
       // No distingo si falló el username o el password (anti user-enumeration).
-      return res.status(401).json({ error: "Credenciales inválidas" });
+      return res.status(401).json({ error: "Credenciales inválidas", attemptsRemaining: remaining });
     }
     if (user.active === false) {
       return res.status(403).json({ error: "Usuario deshabilitado" });
     }
 
+    // Login OK → limpiamos el contador de intentos fallidos de esa cuenta.
+    await clearAttempts(username);
     const token = signSession(user);
     // Lo que devolvemos al cliente: user sin password + token.
     return res.status(200).json({ user, token });
