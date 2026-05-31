@@ -22,7 +22,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 const MAX_BODY_BYTES = 4 * 1024;
 const ALLOWED_APP_KEYS = new Set(["oocyte", "sperm", "blastocyst"]);
-const ALLOWED_KEYS = new Set(["upload", "download_own"]);
+const ALLOWED_KEYS = new Set(["upload", "download_own", "view_stats_own"]);
 
 function readBody(req) {
   if (req.body && typeof req.body === "object") return req.body;
